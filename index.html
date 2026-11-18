@@ -446,7 +446,8 @@ var SW = (function () {
 
   function factorsAt(daily, i, benchPct) {
     if (i < 25) return null;
-    var c = daily.map(function (x) { return x.c; });
+    /* 收盘价数组缓存在 daily 上（以前每根K都重建一遍，整条序列是 O(n²)，手机上很卡）。daily 一旦生成就不再修改。 */
+    var c = (daily._c && daily._c.length === daily.length) ? daily._c : (daily._c = daily.map(function (x) { return x.c; }));
     var px = c[i];
     var trs = [], j;
     for (j = i - 13; j <= i; j++) {
@@ -1228,8 +1229,9 @@ function deskLoad() {
   if (DK.busy) return Promise.resolve();
   DK.busy = true; DK.err = "";
   var ph = (!DK.H || DK.hAt !== bjDate()) ? dkLoadHist() : Promise.resolve();
-  var pn = (!DK.N || Date.now() - DK.nAt > 240000) ? dkLoadNews().catch(function () { }) : Promise.resolve();
-  return Promise.all([ph, dkLoadLive(), pn]).then(function () { DK.busy = false; }, function (e) {
+  /* 公告/快讯不挡页面：后台取，取到再刷新光迅页 */
+  if (!DK.N || Date.now() - DK.nAt > 240000) dkLoadNews().then(function () { if (typeof PAGE !== "undefined" && PAGE === "gx") renderDesk(); }, function () { });
+  return Promise.all([ph, dkLoadLive()]).then(function () { DK.busy = false; }, function (e) {
     DK.busy = false; DK.err = (e && e.message) || String(e);
   });
 }
@@ -1477,6 +1479,19 @@ function lvConv(bars) {
   return { "昨高": p.h, "昨低": p.l, "昨收": p.c, "枢轴": piv, "R1": 2 * piv - p.l, "S1": 2 * piv - p.h, "R2": piv + rg, "S2": piv - rg,
     "MA5": ma(5), "MA10": ma(10), "MA20": m20, "布林上轨": m20 + 2 * sd, "布林下轨": m20 - 2 * sd, "5日高": hi5, "5日低": lo5 };
 }
+/* 盘中实时（2026-11-18，src/v7/intraday.html）：5 分钟K校准，2026-08-13~09-24，5 只个股 155 天、7130 个时点。
+   从现价到收盘的剩余最大涨/跌 ÷ (α × ATR × √(1−f)) 的分位表；f = 到此刻为止典型完成的日内波动比例（每 5 分钟一个）。
+   检验集（后 1/3 交易日）：剩余区间预测与实际相关 涨 0.38、跌 0.50。按盘中已实现波动再调整没有更准（跌 0.50→0.43），所以不用。 */
+var IV = { alpha: 0.5072,
+  fv: [0.1424,0.2451,0.3035,0.3592,0.4062,0.4349,0.4613,0.5034,0.5292,0.5748,0.6007,0.6236,0.6398,0.6622,0.6757,0.697,0.7099,0.7204,0.7375,0.7439,0.7484,0.7638,0.775,0.7899,0.8278,0.8382,0.8492,0.8679,0.8732,0.8795,0.8955,0.9016,0.9138,0.9208,0.9305,0.9397,0.9488,0.9546,0.9586,0.9666,0.9689,0.9747,0.9838,0.9884,0.9915,0.9962,0.9992,1],
+  qU: [0,0,0,0,0.0023,0.0153,0.0274,0.0417,0.0567,0.0684,0.0823,0.0941,0.1052,0.1184,0.1299,0.1426,0.1553,0.1688,0.1795,0.1931,0.2029,0.2137,0.2242,0.2349,0.246,0.2595,0.2728,0.2838,0.2983,0.3129,0.3289,0.3411,0.3554,0.3685,0.3806,0.3959,0.4089,0.4218,0.4355,0.4509,0.4684,0.4835,0.4988,0.5126,0.5257,0.5408,0.5594,0.5766,0.5903,0.6051,0.6201,0.6352,0.6534,0.67,0.6861,0.7035,0.7194,0.7414,0.7594,0.7787,0.8007,0.8201,0.8398,0.8632,0.8843,0.9031,0.9251,0.947,0.9694,0.9918,1.0182,1.0411,1.0693,1.0969,1.1256,1.1598,1.1949,1.2267,1.2615,1.2958,1.3303,1.3657,1.4094,1.4514,1.4985,1.5437,1.5836,1.6391,1.6919,1.7602,1.8181,1.8859,1.9698,2.057,2.1476,2.2969,2.4956,2.7206,3.0422,3.77,13.9242],
+  qD: [0,0,0,0,0.0149,0.0262,0.0444,0.061,0.0729,0.0878,0.0992,0.1148,0.1285,0.1423,0.1584,0.1726,0.1836,0.1951,0.206,0.2189,0.2299,0.2418,0.2528,0.2672,0.2808,0.2944,0.3061,0.319,0.3316,0.3436,0.3586,0.3706,0.383,0.3986,0.4101,0.4222,0.4361,0.4486,0.4619,0.4762,0.4889,0.5059,0.5202,0.5322,0.5451,0.5602,0.5757,0.5891,0.6043,0.6198,0.6352,0.6509,0.6657,0.6785,0.6942,0.7109,0.7267,0.7465,0.7609,0.7798,0.7996,0.8178,0.8348,0.8586,0.8788,0.9004,0.9197,0.9434,0.966,0.9872,1.0107,1.0332,1.0523,1.0771,1.1027,1.1239,1.1509,1.177,1.2014,1.2287,1.2573,1.2858,1.3136,1.3467,1.3776,1.4079,1.4402,1.4811,1.5296,1.5705,1.6218,1.68,1.7462,1.8138,1.9097,1.9985,2.0994,2.2475,2.5986,3.0882,7.7256] };
+function ivFrac(m) {
+  if (m <= 570) return 0; if (m >= 900) return 1;
+  var k = m <= 690 ? (m - 570) / 5 : (m < 780 ? 24 : 24 + (m - 780) / 5), i = Math.floor(k), fr = k - i;
+  var a = i <= 0 ? 0 : IV.fv[Math.min(47, i - 1)], b = IV.fv[Math.min(47, i)];
+  return a + (b - a) * fr;
+}
 var LV_CONV_EV = { grid: -31.5, gridT: -2.09, bOnly: -16.2, sOnly: -44.2, sOnlyT: -2.42, hitS: 48, hitB: 53 };
 var LV_LAB = { gapA: "竞价跳空", absGap: "跳空大小", rng1: "昨日振幅", rng5: "5日振幅", basisIM: "IM贴水", ntAmt: "国家队放量",
   rsi: "RSI", boll: "布林位置", macd: "MACD柱", vr: "量比", us: "美股光模块", absUs: "美股波动大小", grp: "板块昨日", rel: "相对板块" };
@@ -1541,10 +1556,32 @@ function lvCompute(F) {
       cand.forEach(function (c) { if (!c.t && (c.side === "S" ? r.h >= c.px + tick : r.l <= c.px - tick)) c.t = r.hm; });
     });
     var px = F.q && +F.q.f43 > 0 ? +F.q.f43 : NaN, ph = F.ph, m = bjMin();
-    var frac = (ph === "open" || ph === "close") ? Math.max(0, 1 - dkVolFrac(m)) : (ph === "after" ? 0 : 1);
-    if (isFinite(px) && frac > 0.02 && (ph === "open" || ph === "close")) {
-      out.px = px; out.frac = frac;
-      out.nS = px * (1 + dS * Math.sqrt(frac)); out.nB = px * (1 - dB * Math.sqrt(frac));
+    /* 盘中实时 B/S：从现价出发，到收盘的剩余区间 = α×ATR×√(1−f) × 今天的因子调整（开盘模型的涨/跌中位 ÷ 平常） */
+    if (isFinite(px) && (ph === "open" || ph === "close") && m < 897) {
+      var f = ivFrac(m), base = IV.alpha * atr / 100 * Math.sqrt(Math.max(1e-4, 1 - f));
+      var bU = Math.max(0.05, Math.exp(LV.up.beta[0]) - 0.05), bD = Math.max(0.05, Math.exp(LV.dn.beta[0]) - 0.05);
+      var sU = base * mU / bU, sD = base * mD / bD;
+      var hiT = -1e18, loT = 1e18; rows.forEach(function (r) { hiT = Math.max(hiT, r.h); loT = Math.min(loT, r.l); });
+      var lv2 = {}; Object.keys(conv).forEach(function (k) { lv2[k] = conv[k]; });
+      lv2["今开"] = anchor; if (+F.q.f71 > 0) lv2["均价"] = +F.q.f71;
+      if (hiT > 0 && isFinite(hiT)) lv2["今日高"] = hiT; if (loT < 1e17) lv2["今日低"] = loT;
+      var rc = [];
+      Object.keys(lv2).forEach(function (k) {
+        var p2 = lv2[k]; if (!isFinite(p2)) return;
+        var intra = /^(今开|均价|今日高|今日低)$/.test(k);
+        if (p2 > px * 1.001) rc.push({ k: k, px: p2, side: "S", p: lvSurv(IV.qU, (p2 / px - 1) / sU), intra: intra });
+        else if (p2 < px * 0.999) rc.push({ k: k, px: p2, side: "B", p: lvSurv(IV.qD, (1 - p2 / px) / sD), intra: intra });
+      });
+      rows.forEach(function (r) { rc.forEach(function (c) { if (!c.intra && !c.t && (c.side === "S" ? r.h >= c.px + tick : r.l <= c.px - tick)) c.t = r.hm; }); });
+      var rt = { px: px, f: f, cand: rc, upPct: IV.qU[50] * sU * 100, dnPct: IV.qD[50] * sD * 100 };
+      ["S", "B"].forEach(function (sd) {
+        var best = null;
+        rc.filter(function (c) { return c.side === sd && c.p >= 0.25 && c.p <= 0.75; })
+          .forEach(function (c) { if (!best || Math.abs(c.p - 0.5) < Math.abs(best.p - 0.5)) best = c; });
+        if (best) { rt[sd] = best.px; rt[sd + "name"] = best.k; rt[sd + "p"] = best.p; best.pick = sd; }
+        else { rt[sd] = sd === "S" ? px * (1 + IV.qU[50] * sU) : px * (1 - IV.qD[50] * sD); rt[sd + "name"] = "模型位"; rt[sd + "p"] = 0.5; }
+      });
+      out.rt = rt;
     }
   }
   return out;
@@ -1555,26 +1592,39 @@ function lvCard(F) {
   if (!L) return h + '<div class="sub">数据不足</div></div>';
   if (L.wait) return h + '<div class="box dim" style="margin-top:0"><b>9:15 集合竞价开始后出点位</b>点位以竞价价格为锚，竞价前没有锚。' +
     '9:15–9:20 的虚拟价可以撤单，点位会跳；9:25 撮合后定下来。</div></div>';
-  var pend = /虚拟价/.test(L.src);
-  h += '<div class="lvbox">' +
-    '<div class="lvs"><span>B 买点 · ' + esc(L.Bname) + '</span><b class="dn">' + fx(L.B, 2) + '</b><i>开盘 −' + fx(L.bPct, 1) + '% · 摸到约 ' + fx(L.Bp * 100, 0) + '%</i>' + (L.tB ? '<em>' + esc(L.tB) + ' 已触及</em>' : (L.today ? '<em class="m">未触及</em>' : '')) + '</div>' +
-    '<div class="lva"><span>锚</span><b>' + fx(L.anchor, 2) + '</b><i>' + esc(L.src) + '</i></div>' +
-    '<div class="lvs"><span>S 卖点 · ' + esc(L.Sname) + '</span><b class="up">' + fx(L.S, 2) + '</b><i>开盘 +' + fx(L.sPct, 1) + '% · 摸到约 ' + fx(L.Sp * 100, 0) + '%</i>' + (L.tS ? '<em>' + esc(L.tS) + ' 已触及</em>' : (L.today ? '<em class="m">未触及</em>' : '')) + '</div></div>';
-  /* 价位梯子：所有常规价位，按价格从高到低 */
-  var lad = L.cand.filter(function (c) { return c.p >= 0.03 || c.pick || c.t; }).sort(function (a, b) { return b.px - a.px; }), ai = lad.filter(function (c) { return c.px > L.anchor; }).length;
+  var pend = /虚拟价/.test(L.src), R = L.rt;
+  var refPx = R ? R.px : L.anchor, cands = R ? R.cand : L.cand;
+  if (R) {
+    /* 盘中：主数字是实时 B/S（从现价到收盘），开盘计划放在下面一行 */
+    h += '<div class="lvbox">' +
+      '<div class="lvs"><span>实时 B · ' + esc(R.Bname) + '</span><b class="dn">' + fx(R.B, 2) + '</b><i>现价 −' + fx((1 - R.B / R.px) * 100, 1) + '% · 收盘前摸到约 ' + fx(R.Bp * 100, 0) + '%</i></div>' +
+      '<div class="lva"><span>现价</span><b>' + fx(R.px, 2) + '</b><i>剩余波动约 ±' + fx((R.upPct + R.dnPct) / 2, 1) + '%</i></div>' +
+      '<div class="lvs"><span>实时 S · ' + esc(R.Sname) + '</span><b class="up">' + fx(R.S, 2) + '</b><i>现价 +' + fx((R.S / R.px - 1) * 100, 1) + '% · 收盘前摸到约 ' + fx(R.Sp * 100, 0) + '%</i></div></div>';
+    h += '<div class="sub">实时 B/S 随现价和剩余时间变：时间越晚、剩下的波动越小，点位越靠近现价。现价 10 秒刷新一次。<br>' +
+      '<b>开盘计划</b>（9:25 按 ' + fx(L.anchor, 2) + ' 定）：B ' + esc(L.Bname) + ' ' + fx(L.B, 2) + (L.tB ? ' <span class="wr">' + esc(L.tB) + ' 已触及</span>' : ' 未触及') +
+      ' · S ' + esc(L.Sname) + ' ' + fx(L.S, 2) + (L.tS ? ' <span class="wr">' + esc(L.tS) + ' 已触及</span>' : ' 未触及') + '</div>';
+  } else {
+    h += '<div class="lvbox">' +
+      '<div class="lvs"><span>B 买点 · ' + esc(L.Bname) + '</span><b class="dn">' + fx(L.B, 2) + '</b><i>开盘 −' + fx(L.bPct, 1) + '% · 摸到约 ' + fx(L.Bp * 100, 0) + '%</i>' + (L.tB ? '<em>' + esc(L.tB) + ' 已触及</em>' : (L.today ? '<em class="m">未触及</em>' : '')) + '</div>' +
+      '<div class="lva"><span>锚</span><b>' + fx(L.anchor, 2) + '</b><i>' + esc(L.src) + '</i></div>' +
+      '<div class="lvs"><span>S 卖点 · ' + esc(L.Sname) + '</span><b class="up">' + fx(L.S, 2) + '</b><i>开盘 +' + fx(L.sPct, 1) + '% · 摸到约 ' + fx(L.Sp * 100, 0) + '%</i>' + (L.tS ? '<em>' + esc(L.tS) + ' 已触及</em>' : (L.today ? '<em class="m">未触及</em>' : '')) + '</div></div>';
+  }
+  /* 价位梯子：按价格从高到低；盘中按现价算"收盘前摸到"的概率 */
+  var lad = cands.filter(function (c) { return c.p >= 0.03 || c.pick || c.t; }).sort(function (a, b) { return b.px - a.px; }), ai = lad.filter(function (c) { return c.px > refPx; }).length;
   var lrow = function (c) {
     return '<tr' + (c.pick ? ' class="lvpick"' : '') + '><td>' + esc(c.k) + (c.pick ? ' <b class="' + (c.pick === "S" ? "up" : "dn") + '">' + c.pick + '</b>' : '') + '</td><td class="r">' + fx(c.px, 2) +
-      '</td><td class="r ' + (c.side === "S" ? "up" : "dn") + '">' + sgn((c.px / L.anchor - 1) * 100, 1) + '%</td><td class="r">' + fx(c.p * 100, 0) + '%</td><td class="r">' +
-      (c.t ? '<span class="wr">' + esc(c.t) + '</span>' : (L.today ? '<span class="m">—</span>' : '')) + '</td></tr>';
+      '</td><td class="r ' + (c.side === "S" ? "up" : "dn") + '">' + sgn((c.px / refPx - 1) * 100, 1) + '%</td><td class="r">' + fx(c.p * 100, 0) + '%</td><td class="r">' +
+      (c.t ? '<span class="wr">' + esc(c.t) + '</span>' : (L.today && !c.intra ? '<span class="m">—</span>' : '')) + '</td></tr>';
   };
-  h += '<div class="tw" style="margin-top:12px"><table class="lvlad"><thead><tr><th>价位</th><th class="r">价格</th><th class="r">距锚</th><th class="r">今天摸到</th><th class="r">' + (L.today ? '触及时间' : '') + '</th></tr></thead><tbody>' +
+  var ancLab = R ? '现价' : '锚（' + (/预估/.test(L.src) ? '假设平开' : (/虚拟/.test(L.src) ? '竞价虚拟价' : '开盘')) + '）';
+  h += '<div class="tw" style="margin-top:12px"><table class="lvlad"><thead><tr><th>价位</th><th class="r">价格</th><th class="r">' + (R ? '距现价' : '距锚') + '</th><th class="r">' + (R ? '收盘前摸到' : '今天摸到') + '</th><th class="r">' + (L.today ? '触及时间' : '') + '</th></tr></thead><tbody>' +
     lad.slice(0, ai).map(lrow).join("") +
-    '<tr class="lvanc"><td>锚（' + esc(/预估/.test(L.src) ? '假设平开' : (/虚拟/.test(L.src) ? '竞价虚拟价' : '开盘')) + '）</td><td class="r"><b>' + fx(L.anchor, 2) + '</b></td><td class="r">0</td><td></td><td></td></tr>' +
+    '<tr class="lvanc"><td>' + esc(ancLab) + '</td><td class="r"><b>' + fx(refPx, 2) + '</b></td><td class="r">0</td><td></td><td></td></tr>' +
     lad.slice(ai).map(lrow).join("") + '</tbody></table></div>';
-  h += '<div class="sub">"今天摸到"是按 14 个因子预测的今天波动范围算的概率。2026 年样本外核对过：说 25% 的实际 25%，说 45% 的实际 47%，说 65% 的实际 65%。' +
+  h += '<div class="sub">' + (R ? '"收盘前摸到"按开盘时 14 个因子给的今日波动、再乘剩余时间算。用 155 个个股交易日的 5 分钟数据校准，后 1/3 的日子检验：预测的剩余区间和实际相关 涨 0.38、跌 0.50。'
+    : '"今天摸到"是按 14 个因子预测的今天波动范围算的概率。2026 年样本外核对过：说 25% 的实际 25%，说 45% 的实际 47%，说 65% 的实际 65%。') +
     'B/S 取的是概率最接近一半的常规价位。</div>';
   if (pend) h += '<div class="sub wr">竞价还没结束，这是按虚拟价算的，9:25 撮合后会变。</div>';
-  if (L.nS) h += '<div class="sub">此刻 ' + fx(L.px, 2) + '，按剩余约 ' + fx(L.frac * 100, 0) + '% 的波动，到收盘的区间约 <b class="dn">' + fx(L.nB, 2) + '</b> ~ <b class="up">' + fx(L.nS, 2) + '</b>。</div>';
   h += '<div class="sub">今天的区间比平常' + (L.wUp >= 0 ? '上沿宽 ' : '上沿窄 ') + fx(Math.abs(L.wUp) * 100, 0) + '%、' + (L.wDn >= 0 ? '下沿宽 ' : '下沿窄 ') + fx(Math.abs(L.wDn) * 100, 0) +
     '%（ATR ' + fx(L.atr, 1) + '%）。' + (L.missing.length ? '缺数据按平均值计：' + esc(L.missing.join('、')) + '。' : '') + '</div>';
   h += '<div class="box warn"><b>这是"今天大概率摸到的位置"，不是买卖信号</b>' +
@@ -1738,7 +1788,7 @@ function dkRender(el) {
   var h = '';
   if (!F) {
     h = '<div class="card">' + (DK.err ? '<div class="box bad" style="margin-top:0"><b>数据没取到</b>' + esc(DK.err) + '。点右上角「刷新」重试。</div>'
-      : '<div class="skel" style="height:120px"></div><div class="sub" style="margin-top:10px">正在取光迅、美股、期指、ETF、资金流…约 20 个接口</div>') + '</div>';
+      : '<div class="skel" style="height:120px"></div><div class="sub" style="margin-top:10px">正在取光迅、美股、期指、资金流… <b class="ldProg"></b></div>') + '</div>';
     el.innerHTML = h; return;
   }
   var q = F.q || {}, px = +q.f43 > 0 ? +q.f43 : F.last.c, pct = isFinite(+q.f170) ? +q.f170 : F.last.pct;
@@ -2137,7 +2187,8 @@ function renderScanCard() {
     '最好的一成 +' + SC_EV.all.p90 + '% 以上，最差的一成 ' + SC_EV.all.p10 + '% 以下。优势来自平均，单笔亏损很常见。' +
     '信号扎堆：大跌那天常常一大批同时触发，它们高度相关，不是独立的几笔。</span></div>';
   if (!have) {
-    h += SC.err ? '<div class="box bad"><b>扫描数据没取到</b>' + esc(SC.err) + '</div>' : '<div class="skel" style="height:60px;margin-top:13px"></div>';
+    h += SC.err ? '<div class="box bad"><b>扫描数据没取到</b>' + esc(SC.err) + '</div>'
+      : '<div class="skel" style="height:60px;margin-top:13px"></div><div class="sub" style="margin-top:8px">正在取 28 只 ETF 的日线… <b class="ldProg"></b></div>';
     return h + '</div>';
   }
   var rows = [], ovMkt = 0;
@@ -2397,14 +2448,19 @@ function ncLabel() {
   return p(b.getMonth() + 1) + "-" + p(b.getDate()) + " " + p(b.getHours()) + ":" + p(b.getMinutes());
 }
 /* 一次刷新要发 50 多个请求；同时发太多，东财会直接断开（ERR_EMPTY_RESPONSE）。所以排队，最多 6 个并发，失败重试两次。 */
-var NQ = { active: 0, max: 6, q: [] };
+var NQ = { active: 0, max: 6, q: [], done: 0, total: 0 };
 function nqPump() {
   while (NQ.active < NQ.max && NQ.q.length) (function (it) {
     NQ.active++;
-    it.fn().then(function (r) { NQ.active--; it.res(r); nqPump(); }, function (e) { NQ.active--; it.rej(e); nqPump(); });
+    it.fn().then(function (r) { NQ.active--; NQ.done++; it.res(r); nqPump(); }, function (e) { NQ.active--; NQ.done++; it.rej(e); nqPump(); });
   })(NQ.q.shift());
 }
-function nqRun(fn) { return new Promise(function (res, rej) { NQ.q.push({ fn: fn, res: res, rej: rej }); nqPump(); }); }
+function nqRun(fn) { NQ.total++; return new Promise(function (res, rej) { NQ.q.push({ fn: fn, res: res, rej: rej }); nqPump(); }); }
+/* 加载进度：页面上 id="ldProg" 的地方显示 已取 x/y */
+setInterval(function () {
+  var a = document.querySelectorAll(".ldProg");
+  for (var i = 0; i < a.length; i++) a[i].textContent = NQ.total ? "已取 " + Math.min(NQ.done, NQ.total) + "/" + NQ.total : "";
+}, 400);
 function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
 function httpGetRetry(url, tries) {
   tries = tries == null ? 2 : tries;
@@ -2525,15 +2581,25 @@ function refresh() {
   busy = true; $("btnRefresh").textContent = "…"; $("btnRefresh").disabled = true;
   BENCH = null; benchP = null; LIVE = 0; TRANSPORT = "";
   function done() { busy = false; $("btnRefresh").textContent = "刷新"; $("btnRefresh").disabled = false; }
-  return (NET_OFF ? Promise.resolve(-1) : netProbe()).then(function (st) {
-    NET_OFF = st === -1;
-    return Promise.all([Promise.all(S.inst.map(loadOne)), deskLoad()]);
-  }).then(function () {
-    return scanLoad();
-  }).then(function () {
+  function stamp() {
     var d = bjNow();
     lastTime = ("0" + d.getHours()).slice(-2) + ":" + ("0" + d.getMinutes()).slice(-2);
     lastFetchAt = Date.now();
+  }
+  if (!NQ.active && !NQ.q.length) { NQ.done = 0; NQ.total = 0; }
+  /* 先取当前页要的数据、取到就先画出来；ETF 扫描（28 只）放到最后在后台取，不挡光迅页 */
+  return (NET_OFF ? Promise.resolve(-1) : netProbe()).then(function (st) {
+    NET_OFF = st === -1;
+    var onGx = PAGE === "gx", jobs = [];
+    var pDesk = function () { return deskLoad().then(function () { stamp(); if (PAGE === "gx") render(); }); };
+    var pInst = function () { return Promise.all(S.inst.map(loadOne)).then(function () { stamp(); if (PAGE !== "gx") render(); }); };
+    if (onGx) { jobs.push(pDesk()); jobs.push(pInst()); }
+    else { jobs.push(pInst()); jobs.push(scanLoad().then(function () { if (PAGE === "dash") render(); })); jobs.push(pDesk()); }
+    return Promise.all(jobs);
+  }).then(function () {
+    return scanLoad();
+  }).then(function () {
+    stamp();
     done(); render(); try { alarmTick(); } catch (e) { } try { deskAlarm(); } catch (e) { } try { scanAlarm(); } catch (e) { }
   }).catch(function () { done(); render(); });
 }
