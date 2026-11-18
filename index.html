@@ -1139,17 +1139,23 @@ function dkLoadHist() {
     DK.H = H; DK.hAt = bjDate();
   });
 }
+function dkQuoteURL() {
+  return "https://push2.eastmoney.com/api/qt/stock/get?invt=2&fltt=2&secid=" + GX_SID +
+    "&fields=f43,f44,f45,f46,f47,f48,f57,f58,f60,f71,f168,f170,f171&ut=" + UT;
+}
+function dkTrendsURL() {
+  return "https://push2.eastmoney.com/api/qt/stock/trends2/get?secid=" + GX_SID +
+    "&fields1=f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f11,f12,f13&fields2=f51,f52,f53,f54,f55,f56,f57,f58&iscr=1&iscca=1&ndays=1&ut=" + UT;
+}
 function dkLoadLive() {
   var L = {}, sids = DK_US.map(function (u) { return u[1]; })
     .concat(["105.NVDA", "100.NDX", "107.KWEB", "107.FXI", "220.IMM", "220.IFM", "1.000852", "1.000300",
       "1.000001", "0.399001", GX_SEC]).concat(DK_ETF.map(function (e) { return e[1]; }));
   var ymd = dkYmd();
   return Promise.all([
-    apiGet("https://push2.eastmoney.com/api/qt/stock/get?invt=2&fltt=2&secid=" + GX_SID +
-      "&fields=f43,f44,f45,f46,f47,f48,f57,f58,f60,f71,f168,f170,f171&ut=" + UT)
+    apiGet(dkQuoteURL())
       .then(function (r) { L.q = r && r.data ? r.data : null; }, function () { L.q = null; }),
-    apiGet("https://push2.eastmoney.com/api/qt/stock/trends2/get?secid=" + GX_SID +
-      "&fields1=f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f11,f12,f13&fields2=f51,f52,f53,f54,f55,f56,f57,f58&iscr=1&iscca=1&ndays=1&ut=" + UT)
+    apiGet(dkTrendsURL())
       .then(function (r) { L.tr = r && r.data ? r.data : null; }, function () { L.tr = null; }),
     apiGet("https://push2.eastmoney.com/api/qt/ulist.np/get?fltt=2&secids=" + sids.join(",") +
       "&fields=f2,f3,f6,f12,f13,f14,f18,f104,f105,f106,f124&ut=" + UT)
@@ -1197,6 +1203,24 @@ function dkLoadNews() {
       .then(function (r) { N.fast = (r && r.data && r.data.fastNewsList) || []; }, function () { N.fast = null; })
   ]).then(function () { DK.N = N; DK.nAt = Date.now(); });
 }
+/* 光迅快刷：停在光迅页、页面在前台、竞价或交易时段（午休除外），每 10 秒只取现价和分时两项。
+   走的是东财实时行情服务器（push2），不碰日线服务器。其他数据仍按 1 分钟刷新。 */
+var DK_FAST_MS = 10000, dkFastBusy = false, dkFastAt = 0, DK_FAST_LAST = "";
+function dkFastTick() {
+  if (dkFastBusy || typeof PAGE === "undefined" || PAGE !== "gx" || NET_OFF || document.hidden || !DK.L || !DK.H) return;
+  var ph = dkPhase(), m = bjMin();
+  if (!(ph === "auc1" || ph === "auc2" || ph === "open" || ph === "close")) return;
+  if (m > 690 && m < 780) return;
+  if (Date.now() - dkFastAt < DK_FAST_MS - 300) return;
+  dkFastBusy = true; dkFastAt = Date.now();
+  Promise.all([
+    apiGet(dkQuoteURL()).then(function (r) { if (r && r.data) DK.L.q = r.data; }),
+    apiGet(dkTrendsURL()).then(function (r) { if (r && r.data) DK.L.tr = r.data; })
+  ]).then(function () {
+    var d = bjNow(); DK_FAST_LAST = ("0" + d.getHours()).slice(-2) + ":" + ("0" + d.getMinutes()).slice(-2) + ":" + ("0" + d.getSeconds()).slice(-2);
+  }, function () { }).then(function () { dkFastBusy = false; renderDesk(); });
+}
+setInterval(function () { try { dkFastTick(); } catch (e) { dkFastBusy = false; } }, 2000);
 function deskLoad() {
   if (DK.busy) return Promise.resolve();
   DK.busy = true; DK.err = "";
@@ -1666,7 +1690,8 @@ function dkRender(el) {
   h += '<div class="hero"><div class="hrow"><span class="hk">光迅科技</span><span class="hv"><span class="' + cl(pct) + '" style="font-size:20px">' + fx(px, 2) +
     '</span> <span class="' + cl(pct) + '">' + sgn(pct, 2) + '%</span>' + (+q.f71 > 0 ? ' <span class="m" style="font-weight:400">均价 ' + fx(+q.f71, 2) + '</span>' : '') + '</span></div>' +
     '<div class="hrow"><span class="hk">时段</span><span class="hv"><span class="pill ' + (ph === "open" || ph === "close" || ph === "auc1" || ph === "auc2" ? "good" : "dim") + '">' + DK_PH[ph] + '</span> ' +
-    (F.isToday ? '<span class="m" style="font-weight:400">按今天这一交易日</span>' : '<span class="m" style="font-weight:400">为下一个交易日准备 · 数据截至 ' + esc(F.P) + '</span>') + '</span></div>' +
+    (F.isToday ? '<span class="m" style="font-weight:400">按今天这一交易日' + (DK_FAST_LAST && !NC_USED && (ph === "auc1" || ph === "auc2" || ph === "open" || ph === "close") ? ' · 现价 ' + esc(DK_FAST_LAST) + ' 更新（10 秒一次）' : '') + '</span>'
+      : '<span class="m" style="font-weight:400">为下一个交易日准备 · 数据截至 ' + esc(F.P) + '</span>') + '</span></div>' +
     '<div class="hrow"><span class="hk">综合读数</span><span class="hv">' + dkCompBar(F.comp) + '</span></div>' +
     '<div class="hnote">综合读数 = 你列的因子按常规读法等权平均（' + F.compN + ' 个有数据）。三年检验它<em>挑不出方向</em>：最偏空时去倒T 显著亏钱。只当温度计看。</div></div>';
   h += lvCard(F);
@@ -1949,7 +1974,7 @@ function scanLoad(force) {
   return loadBench().then(function (bench) {
     var codes = scCodes(), ok = 0;
     return Promise.all(codes.map(function (c) {
-      return apiGet(kURL(secid(c), 400)).then(function (r) {
+      return kCached(secid(c), 400).then(function (r) {
         if (!r || !r.data || !r.data.klines) return;
         var dl = SW.parseK(r.data.klines);
         SC.D[c] = { code: c, name: r.data.name, daily: dl, ser: SW.buildSeries(dl, bench, SC_P) }; ok++;
@@ -2288,6 +2313,28 @@ function netProbe() {
     });
   });
 }
+/* 日线历史一天只取一次全量；之后每次刷新只取最近 3 根合并进去。东财日线服务器对频繁的大请求会封 IP。 */
+var KC = {};
+function kCached(sid, lmt) {
+  var c = KC[sid], day = bjDate();
+  if (!NET_OFF && c && c.day === day && c.lmt >= lmt) {
+    return apiGet(kURL(sid, 3)).then(function (r) {
+      var arr = c.klines.slice();
+      ((r && r.data && r.data.klines) || []).forEach(function (s) {
+        var d = s.slice(0, 10), j = arr.length - 1;
+        while (j >= 0 && arr[j].slice(0, 10) > d) j--;
+        if (j >= 0 && arr[j].slice(0, 10) === d) arr[j] = s; else arr.splice(j + 1, 0, s);
+      });
+      c.klines = arr;
+      return { data: { name: c.name, klines: arr } };
+    }, function () { return { data: { name: c.name, klines: c.klines } }; });
+  }
+  return apiGet(kURL(sid, lmt)).then(function (r) {
+    if (!NET_OFF && r && r.data && r.data.klines && r.data.klines.length)
+      KC[sid] = { day: day, lmt: lmt, name: r.data.name, klines: r.data.klines.slice() };
+    return r;
+  });
+}
 function apiGet(url) {
   if (NET_OFF) return ncGet(url);
   return httpGetRetry(url).then(function (r) { TRANSPORT = TRANSPORT || "fetch"; return r; })
@@ -2318,7 +2365,7 @@ var benchP = null;
 function loadBench() {
   if (BENCH) return Promise.resolve(BENCH);
   if (benchP) return benchP;
-  benchP = apiGet(kURL("1.000001", HIST))
+  benchP = kCached("1.000001", HIST)
     .then(function (r) { LIVE = 1; return SW.parseK(r.data.klines); })
     .catch(function (e) {
       if (typeof SNAP === "undefined" || !SNAP || !SNAP.bench) throw e;
@@ -2332,7 +2379,7 @@ function loadOne(it) {
   return loadBench().then(function (bench) {
     var pk = (LIVE === -1)
       ? Promise.reject(new Error("接口不可用"))
-      : apiGet(kURL(sid, HIST)).then(function (r) { return SW.parseK(r.data.klines); });
+      : kCached(sid, HIST).then(function (r) { return SW.parseK(r.data.klines); });
     return pk.catch(function (e) {
       if (!sn) throw new Error("实时接口不可用，内置快照里也没有这只标的");
       LIVE = -1; return SW.parseK(sn.daily);
