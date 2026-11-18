@@ -302,6 +302,9 @@ td.r,th.r{text-align:right}
 .lvbox i{display:block;font-style:normal;font-size:11px;color:var(--tx3);overflow-wrap:anywhere}
 .lvbox em{display:block;font-style:normal;font-size:11px;margin-top:5px;color:var(--warn)}
 .lvbox em.m{color:var(--tx3)}
+table.lvlad td{padding:6px 8px;font-size:12px}
+table.lvlad tr.lvpick td{background:rgba(91,140,255,.10);font-weight:600}
+table.lvlad tr.lvanc td{background:var(--surf2);color:var(--tx2)}
 .lvbox .lva b{font-size:16px;color:var(--tx2)}
 .lvbox .lva{max-width:110px}
 @media(max-width:420px){.lvbox b{font-size:20px}.lvbox .lva{max-width:86px}}
@@ -1286,7 +1289,7 @@ function deskCompute() {
   var all = H.gx, d = all.filter(function (x) { return x.d < today || (x.d === today && ph === "after"); });
   if (d.length < 150) return null;
   var n = d.length, last = d[n - 1], P = last.d, prevP = d[n - 2].d;
-  F_BARS = d.slice(-7);
+  F_BARS = d.slice(-25);
   var T = (ph === "after" || ph === "closed") ? "9999-12-31" : today;
   var tech = dkTech(d), atr = tech.atr[n - 1];
   var F = { P: P, T: T, ph: ph, atr: atr, last: last, rows: {}, bars: F_BARS };
@@ -1453,6 +1456,28 @@ var LV = {
   up: { beta: [-0.86034, -0.07921, 0.052, 0.06871, 0.03266, 0.05805, 0.00117, 0.06992, -0.04119, 0.02516, 0.02491, 0.06736, 0.01646, -0.03418, -0.00923], c: 1.1168 },
   dn: { beta: [-1.08576, 0.08696, 0.03615, 0.02538, 0.08693, -0.05601, 0.03483, -0.02152, 0.0137, 0.00422, -0.00043, -0.0745, -0.02353, -0.00316, 0.02114], c: 1.1689 }
 };
+/* 实际涨(跌)幅 ÷ 模型预测中位 的 101 个分位（光模块组全部数据）。某价位的触及概率 = P(比值 ≥ 距离/预测中位)。
+   样本外校准（2026，光模块组 4167 天）：预测 25%→实际 25%，45%→47%，65%→65%，85%→84%。 */
+var LVQ = {
+  up: [0,0,0,0,0.0273,0.0585,0.0911,0.1212,0.1458,0.1707,0.188,0.2122,0.2324,0.2526,0.2731,0.2934,0.3142,0.333,0.3576,0.3788,0.4002,0.421,0.4395,0.4631,0.4843,0.5076,0.5306,0.5531,0.5752,0.5974,0.6177,0.6378,0.6603,0.6812,0.7052,0.7266,0.7527,0.7752,0.799,0.8231,0.8507,0.8778,0.9002,0.9236,0.9514,0.9763,1.0021,1.0292,1.0613,1.0882,1.1168,1.1436,1.1704,1.1993,1.2289,1.258,1.2907,1.3203,1.3542,1.3916,1.4283,1.4636,1.496,1.5283,1.5667,1.5996,1.6365,1.6771,1.7199,1.7614,1.8055,1.8517,1.8933,1.9454,1.9958,2.0502,2.105,2.1593,2.2113,2.2688,2.3324,2.3934,2.4533,2.5366,2.6182,2.7095,2.8034,2.9084,3.0185,3.1205,3.2401,3.3954,3.5453,3.721,3.8969,4.1229,4.4308,4.7839,5.2878,6.2513,12.2577],
+  dn: [0,0,0,0,0,0,0,0.028,0.06,0.0946,0.1266,0.1529,0.1779,0.2031,0.2299,0.2553,0.2818,0.3032,0.3291,0.3574,0.3801,0.4063,0.4331,0.4551,0.4812,0.5075,0.5322,0.5566,0.5823,0.6054,0.627,0.6492,0.6739,0.7005,0.7255,0.7527,0.7794,0.8042,0.8299,0.8558,0.881,0.9076,0.933,0.9609,0.9893,1.0194,1.0507,1.0793,1.1101,1.1398,1.1689,1.1979,1.2261,1.2557,1.289,1.3168,1.3512,1.3896,1.4255,1.4583,1.4902,1.5258,1.5627,1.5942,1.6297,1.6696,1.7065,1.7488,1.797,1.8389,1.8852,1.9338,1.9755,2.0211,2.0677,2.112,2.1592,2.2179,2.2755,2.3357,2.3993,2.4535,2.5236,2.5859,2.65,2.7342,2.8208,2.8967,2.9824,3.0708,3.1642,3.2702,3.3965,3.521,3.6812,3.8859,4.122,4.4259,4.8088,5.5763,13.4525]
+};
+function lvSurv(q, v) {
+  if (v <= q[0]) return 1; if (v >= q[100]) return 0;
+  var lo = 0, hi = 100; while (hi - lo > 1) { var m = (lo + hi) >> 1; if (q[m] <= v) lo = m; else hi = m; }
+  return 1 - (lo + (v - q[lo]) / ((q[hi] - q[lo]) || 1)) / 100;
+}
+/* 常规价位：全部用上一交易日收盘前已知的数据 */
+function lvConv(bars) {
+  var n = bars.length; if (n < 21) return {};
+  var p = bars[n - 1], piv = (p.h + p.l + p.c) / 3, rg = p.h - p.l;
+  function ma(k) { var s = 0; for (var i = n - k; i < n; i++) s += bars[i].c; return s / k; }
+  var m20 = ma(20), v = 0; for (var i = n - 20; i < n; i++) v += (bars[i].c - m20) * (bars[i].c - m20); var sd = Math.sqrt(v / 20);
+  var hi5 = -1e18, lo5 = 1e18; for (i = n - 5; i < n; i++) { hi5 = Math.max(hi5, bars[i].h); lo5 = Math.min(lo5, bars[i].l); }
+  return { "昨高": p.h, "昨低": p.l, "昨收": p.c, "枢轴": piv, "R1": 2 * piv - p.l, "S1": 2 * piv - p.h, "R2": piv + rg, "S2": piv - rg,
+    "MA5": ma(5), "MA10": ma(10), "MA20": m20, "布林上轨": m20 + 2 * sd, "布林下轨": m20 - 2 * sd, "5日高": hi5, "5日低": lo5 };
+}
+var LV_CONV_EV = { grid: -31.5, gridT: -2.09, bOnly: -16.2, sOnly: -44.2, sOnlyT: -2.42, hitS: 48, hitB: 53 };
 var LV_LAB = { gapA: "竞价跳空", absGap: "跳空大小", rng1: "昨日振幅", rng5: "5日振幅", basisIM: "IM贴水", ntAmt: "国家队放量",
   rsi: "RSI", boll: "布林位置", macd: "MACD柱", vr: "量比", us: "美股光模块", absUs: "美股波动大小", grp: "板块昨日", rel: "相对板块" };
 var LV_EV = { rUp: 0.22, rDn: 0.11, gxUp: 0.28, gxDn: 0.17, hitS: 49, hitB: 55, both: 13,
@@ -1486,6 +1511,23 @@ function lvCompute(F) {
   var out = { anchor: anchor, src: src, atr: atr, raw: raw, z: z, missing: missing, today: today,
     S: anchor * (1 + dS), B: anchor * (1 - dB), sPct: dS * 100, bPct: dB * 100,
     wUp: mU / base("up") - 1, wDn: mD / base("dn") - 1 };
+  /* 常规价位：每个价位算今天摸到的概率；B/S 取概率最接近 50% 的（限 25%~75%），没有就用模型价位 */
+  out.mS = out.S; out.mB = out.B;
+  var conv = lvConv(bars), cand = [];
+  Object.keys(conv).forEach(function (k) {
+    var px = conv[k]; if (!isFinite(px)) return;
+    if (px > anchor * 1.001) cand.push({ k: k, px: px, side: "S", p: lvSurv(LVQ.up, (px / anchor - 1) * 100 / atr / mU) });
+    else if (px < anchor * 0.999) cand.push({ k: k, px: px, side: "B", p: lvSurv(LVQ.dn, (1 - px / anchor) * 100 / atr / mD) });
+  });
+  out.cand = cand;
+  ["S", "B"].forEach(function (sd) {
+    var best = null;
+    cand.filter(function (c) { return c.side === sd && c.p >= 0.25 && c.p <= 0.75; })
+      .forEach(function (c) { if (!best || Math.abs(c.p - 0.5) < Math.abs(best.p - 0.5)) best = c; });
+    if (best) { out[sd] = best.px; out[sd + "name"] = best.k; out[sd + "p"] = best.p; best.pick = sd; }
+    else { out[sd + "name"] = "模型位"; out[sd + "p"] = 0.5; }
+  });
+  out.sPct = (out.S / anchor - 1) * 100; out.bPct = (1 - out.B / anchor) * 100;
   out.contrib = LV.feats.map(function (k, i) {
     return { k: k, raw: raw[k], z: z[k], up: Math.exp(LV.up.beta[i + 1] * z[k]) - 1, dn: Math.exp(LV.dn.beta[i + 1] * z[k]) - 1 };
   });
@@ -1496,6 +1538,7 @@ function lvCompute(F) {
     rows.forEach(function (r) {
       if (!out.tS && r.h >= out.S + tick) out.tS = r.hm;
       if (!out.tB && r.l <= out.B - tick) out.tB = r.hm;
+      cand.forEach(function (c) { if (!c.t && (c.side === "S" ? r.h >= c.px + tick : r.l <= c.px - tick)) c.t = r.hm; });
     });
     var px = F.q && +F.q.f43 > 0 ? +F.q.f43 : NaN, ph = F.ph, m = bjMin();
     var frac = (ph === "open" || ph === "close") ? Math.max(0, 1 - dkVolFrac(m)) : (ph === "after" ? 0 : 1);
@@ -1514,18 +1557,32 @@ function lvCard(F) {
     '9:15–9:20 的虚拟价可以撤单，点位会跳；9:25 撮合后定下来。</div></div>';
   var pend = /虚拟价/.test(L.src);
   h += '<div class="lvbox">' +
-    '<div class="lvs"><span>B 买点</span><b class="dn">' + fx(L.B, 2) + '</b><i>开盘 −' + fx(L.bPct, 1) + '%</i>' + (L.tB ? '<em>' + esc(L.tB) + ' 已触及</em>' : (L.today ? '<em class="m">未触及</em>' : '')) + '</div>' +
+    '<div class="lvs"><span>B 买点 · ' + esc(L.Bname) + '</span><b class="dn">' + fx(L.B, 2) + '</b><i>开盘 −' + fx(L.bPct, 1) + '% · 摸到约 ' + fx(L.Bp * 100, 0) + '%</i>' + (L.tB ? '<em>' + esc(L.tB) + ' 已触及</em>' : (L.today ? '<em class="m">未触及</em>' : '')) + '</div>' +
     '<div class="lva"><span>锚</span><b>' + fx(L.anchor, 2) + '</b><i>' + esc(L.src) + '</i></div>' +
-    '<div class="lvs"><span>S 卖点</span><b class="up">' + fx(L.S, 2) + '</b><i>开盘 +' + fx(L.sPct, 1) + '%</i>' + (L.tS ? '<em>' + esc(L.tS) + ' 已触及</em>' : (L.today ? '<em class="m">未触及</em>' : '')) + '</div></div>';
+    '<div class="lvs"><span>S 卖点 · ' + esc(L.Sname) + '</span><b class="up">' + fx(L.S, 2) + '</b><i>开盘 +' + fx(L.sPct, 1) + '% · 摸到约 ' + fx(L.Sp * 100, 0) + '%</i>' + (L.tS ? '<em>' + esc(L.tS) + ' 已触及</em>' : (L.today ? '<em class="m">未触及</em>' : '')) + '</div></div>';
+  /* 价位梯子：所有常规价位，按价格从高到低 */
+  var lad = L.cand.filter(function (c) { return c.p >= 0.03 || c.pick || c.t; }).sort(function (a, b) { return b.px - a.px; }), ai = lad.filter(function (c) { return c.px > L.anchor; }).length;
+  var lrow = function (c) {
+    return '<tr' + (c.pick ? ' class="lvpick"' : '') + '><td>' + esc(c.k) + (c.pick ? ' <b class="' + (c.pick === "S" ? "up" : "dn") + '">' + c.pick + '</b>' : '') + '</td><td class="r">' + fx(c.px, 2) +
+      '</td><td class="r ' + (c.side === "S" ? "up" : "dn") + '">' + sgn((c.px / L.anchor - 1) * 100, 1) + '%</td><td class="r">' + fx(c.p * 100, 0) + '%</td><td class="r">' +
+      (c.t ? '<span class="wr">' + esc(c.t) + '</span>' : (L.today ? '<span class="m">—</span>' : '')) + '</td></tr>';
+  };
+  h += '<div class="tw" style="margin-top:12px"><table class="lvlad"><thead><tr><th>价位</th><th class="r">价格</th><th class="r">距锚</th><th class="r">今天摸到</th><th class="r">' + (L.today ? '触及时间' : '') + '</th></tr></thead><tbody>' +
+    lad.slice(0, ai).map(lrow).join("") +
+    '<tr class="lvanc"><td>锚（' + esc(/预估/.test(L.src) ? '假设平开' : (/虚拟/.test(L.src) ? '竞价虚拟价' : '开盘')) + '）</td><td class="r"><b>' + fx(L.anchor, 2) + '</b></td><td class="r">0</td><td></td><td></td></tr>' +
+    lad.slice(ai).map(lrow).join("") + '</tbody></table></div>';
+  h += '<div class="sub">"今天摸到"是按 14 个因子预测的今天波动范围算的概率。2026 年样本外核对过：说 25% 的实际 25%，说 45% 的实际 47%，说 65% 的实际 65%。' +
+    'B/S 取的是概率最接近一半的常规价位。</div>';
   if (pend) h += '<div class="sub wr">竞价还没结束，这是按虚拟价算的，9:25 撮合后会变。</div>';
   if (L.nS) h += '<div class="sub">此刻 ' + fx(L.px, 2) + '，按剩余约 ' + fx(L.frac * 100, 0) + '% 的波动，到收盘的区间约 <b class="dn">' + fx(L.nB, 2) + '</b> ~ <b class="up">' + fx(L.nS, 2) + '</b>。</div>';
   h += '<div class="sub">今天的区间比平常' + (L.wUp >= 0 ? '上沿宽 ' : '上沿窄 ') + fx(Math.abs(L.wUp) * 100, 0) + '%、' + (L.wDn >= 0 ? '下沿宽 ' : '下沿窄 ') + fx(Math.abs(L.wDn) * 100, 0) +
     '%（ATR ' + fx(L.atr, 1) + '%）。' + (L.missing.length ? '缺数据按平均值计：' + esc(L.missing.join('、')) + '。' : '') + '</div>';
   h += '<div class="box warn"><b>这是"今天大概率摸到的位置"，不是买卖信号</b>' +
-    '每个点位历史上约一半的日子会摸到（2026 样本外：S ' + LV_EV.hitS + '%、B ' + LV_EV.hitB + '%，两个都摸到 ' + LV_EV.both + '%）。' +
+    'B/S 历史上约一半的日子会摸到（2026 样本外：S ' + LV_CONV_EV.hitS + '%、B ' + LV_CONV_EV.hitB + '%）。' +
     '因子对区间宽窄有预测力（光迅 2026：上沿相关 ' + LV_EV.gxUp + '、下沿 ' + LV_EV.gxDn + '），对方向基本没有。<br>' +
-    '按点位交易的回测都不赚钱：碰 B 买、碰 S 卖 <em>' + LV_EV.grid + 'bp</em>（光模块组 2026），随机个股 ' + LV_EV.gridR + 'bp（t=' + LV_EV.gridRT + '）；' +
-    '碰 S 卖、收盘买回 ' + LV_EV.sOnly + 'bp；碰 B 买、收盘卖 光迅 2026 是 +' + LV_EV.bOnlyGx + 'bp（不显著），不如开盘直接买（+' + LV_EV.openGx26 + 'bp）。</div>';
+    '按点位交易的回测都不赚钱。用这些常规价位：碰 B 买、碰 S 卖 <em>' + LV_CONV_EV.grid + 'bp</em>（光模块组 2026，t=' + LV_CONV_EV.gridT + '），' +
+    '碰 S 卖、收盘买回 ' + LV_CONV_EV.sOnly + 'bp，碰 B 买、收盘卖 ' + LV_CONV_EV.bOnly + 'bp。用模型价位也一样（随机个股 ' + LV_EV.gridR + 'bp，t=' + LV_EV.gridRT + '）。' +
+    '光迅 2026 年开盘直接买、收盘卖是 +' + LV_EV.openGx26 + 'bp，比等 B 点好。</div>';
   var shU = lvShare("up"), shD = lvShare("dn");
   h += '<details class="fold"><summary>每个因子的权重和今天的影响</summary><div class="tw"><table><thead><tr><th>因子</th><th class="r">今天</th>' +
     '<th class="r">S 权重</th><th class="r">B 权重</th><th class="r">S 距离</th><th class="r">B 距离</th></tr></thead><tbody>' +
@@ -1908,7 +1965,7 @@ function deskAlarm() {
   if (m >= 565 && m <= 572 && DKS.N.am !== today && F.isToday && isFinite(F.rows.gap && F.rows.gap.v)) {
     DKS.N.am = today; dkSave();
     var lim = F.gapPx >= F.prevC * 1.097, Lv = lvCompute(F);
-    notifSend("光迅竞价 " + dkPctS(F.rows.gap.v) + " · B " + (Lv && Lv.B ? fx(Lv.B, 2) : "—") + " / S " + (Lv && Lv.S ? fx(Lv.S, 2) : "—"),
+    notifSend("光迅竞价 " + dkPctS(F.rows.gap.v) + " · B " + (Lv && Lv.B ? Lv.Bname + " " + fx(Lv.B, 2) : "—") + " / S " + (Lv && Lv.S ? Lv.Sname + " " + fx(Lv.S, 2) : "—"),
       lim ? "竞价涨停，今天不做。" : "B/S 是今天约一半概率摸到的位置，不是信号。要做T：只做正T，9:30 后买，14:50 后卖同样数量底仓。");
   }
   var open = DKS.log.filter(function (e) { return !(e.p2 > 0) && e.d === today; });
@@ -2013,6 +2070,45 @@ function scState(D) {
   }
   return res;
 }
+/* 触发价：下一个要判断的那个收盘，收在多少以下会触发（同时要上证收跌）。
+   最后一根K的分数只取决于它自己的「当日涨跌 / 相对上证 / 连涨连跌」，标准化窗口和分位窗口都是之前的数据，
+   所以分位对收盘价单调，可以二分。盘中用当天真实的高低和上证实时涨跌；盘外按下一个交易日、假设上证收跌 0.5%、平开。 */
+function scTrigger(D) {
+  var dl = D.daily, n = dl.length; if (n < 260 || !BENCH) return null;
+  var today = bjDate(), m = bjMin(), wk = isWk();
+  var hasToday = dl[n - 1].d === today, live = hasToday && wk && m < 900 && m >= 570;
+  var pre = hasToday && wk && m < 570;   /* 竞价时东财可能已经给出当日K，按盘前处理 */
+  var base = (live || pre) ? dl.slice(0, n - 1) : dl.slice(), nb = base.length, pc = base[nb - 1].c;
+  var cur = live ? dl[n - 1] : null;
+  if (!D.trSer || D.trN !== nb || D.trLast !== base[nb - 1].c) { D.trSer = SW.buildSeries(base, BENCH, SC_P); D.trN = nb; D.trLast = base[nb - 1].c; }
+  var ser = D.trSer, keys = ["day1", "rs", "run"], win = [], scores = [];
+  for (var i = 0; i < nb; i++) if (ser[i]) { win.push(ser[i].f); scores.push(ser[i].score); }
+  win = win.slice(-SC_P.normWin); scores = scores.slice(-SC_P.pctWin);
+  if (win.length < 60 || scores.length < 60) return null;
+  var mu = {}, sd = {};
+  keys.forEach(function (k) { var col = win.map(function (f) { return f[k]; }); mu[k] = SW.mean(col); sd[k] = SW.stdev(col) || 1; });
+  var bkey = live ? today : "9999-12-31", bp = live && isFinite(BENCH[today]) ? BENCH[today] : -0.5;
+  var bmap = Object.create(BENCH); bmap[bkey] = bp;
+  function pctAt(c) {
+    var o = cur ? cur.o : pc, h = Math.max(cur ? cur.h : Math.max(o, pc), c), l = Math.min(cur ? cur.l : Math.min(o, pc), c);
+    var t = { d: bkey, o: o, h: h, l: l, c: c, vol: cur ? cur.vol : base[nb - 1].vol, amt: 0, pct: (c / pc - 1) * 100 };
+    var f = SW.factorsAt(base.concat([t]), nb, bmap); if (!f) return 100;
+    var s = 0; keys.forEach(function (k) { s += Math.max(-4, Math.min(4, (f[k] - mu[k]) / sd[k])); });
+    s /= keys.length;
+    var cnt = 0; scores.forEach(function (v) { if (v <= s) cnt++; });
+    return cnt / scores.length * 100;
+  }
+  var lo = pc * 0.80, hi = pc * 1.03;
+  if (pctAt(lo) > 10) return { none: true, pc: pc, live: live, bp: bp };
+  if (pctAt(hi) <= 10) return { px: hi, pc: pc, live: live, bp: bp, ref: cur ? cur.c : pc };
+  for (var it = 0; it < 30; it++) { var mid = (lo + hi) / 2; if (pctAt(mid) <= 10) lo = mid; else hi = mid; }
+  var ref = cur ? cur.c : pc;
+  return { px: lo, pc: pc, live: live, bp: bp, ref: ref, need: (lo / ref - 1) * 100, nowPct: cur ? pctAt(cur.c) : null };
+}
+function scShares(px) {
+  var amt = S.F.notional > 0 ? S.F.notional : 50000;
+  return px > 0 ? Math.floor(amt / px / 100) * 100 : 0;
+}
 /* 冻结日之后的前向记分（两种做法） */
 function scForward() {
   var today = bjDate(), m = bjMin(), out = { base: [], nb: [] };
@@ -2058,10 +2154,30 @@ function renderScanCard() {
       rows.map(function (r) {
         var c = r.x.st.t === "buy" ? "dn" : (r.x.st.t === "sell" || r.x.st.t === "hold" ? "up" : "m");
         return '<tr><td>' + esc(r.D.name) + '<div class="m" style="font-size:11px">' + esc(r.D.code) + '</div></td><td class="r">' + esc(r.x.d.slice(5)) +
-          '</td><td class="r">' + fx(r.x.pct, 0) + '%</td><td class="' + c + '" style="font-size:12px">' + esc(r.x.st.txt) + '</td></tr>';
+          '</td><td class="r">' + fx(r.x.pct, 0) + '%</td><td class="' + c + '" style="font-size:12px">' + esc(r.x.st.txt) +
+          (r.x.st.t === "buy" || r.x.st.t === "prov" ? '<div class="m">约 ' + scShares(r.D.daily[r.D.daily.length - 1].c) + ' 股（每笔 ' + fx((S.F.notional || 50000) / 1e4, 0) + ' 万，可在「设置」改）</div>' : '') + '</td></tr>';
       }).join("") + '</tbody></table></div>';
   } else {
     h += '<div class="box dim"><b>没有待办</b>扫描列表里没有触发的 ETF。' + (ovMkt ? ' 有 ' + ovMkt + ' 只超卖了，但当天上证没跌（规则不出手）。' : '') + '</div>';
+  }
+  /* 每只 ETF 的触发价 */
+  var trs = [];
+  codes.forEach(function (c) { var D = SC.D[c]; if (!D) return; var t = null; try { t = scTrigger(D); } catch (e) { } if (t) trs.push({ D: D, t: t }); });
+  if (trs.length) {
+    var live0 = trs[0].t.live, bp0 = trs[0].t.bp;
+    trs.sort(function (a, b) { return (a.t.none ? 1e9 : -a.t.need) - (b.t.none ? 1e9 : -b.t.need); });
+    var trow = function (x) {
+      var t = x.t, D = x.D, name = esc(D.name.replace(/ETF.*$/, "ETF"));
+      if (t.none) return '<tr><td>' + name + '</td><td class="r">' + fx(t.pc, 3) + '</td><td class="r m" colspan="2">跌 20% 也不触发</td></tr>';
+      var hit = t.need >= 0;
+      return '<tr><td>' + name + '<div class="m" style="font-size:11px">' + esc(D.code) + '</div></td><td class="r">' + fx(t.ref, 3) + '</td><td class="r"><b class="dn">' + fx(t.px, 3) + '</b></td>' +
+        '<td class="r ' + (hit ? "wr" : "") + '">' + (hit ? (t.live ? '已在触发区' : '平收就触发') : fx(t.need, 1) + '%') + '</td></tr>';
+    };
+    h += '<div class="sub" style="margin-top:14px"><b>每只的触发价</b>：' + (live0 ? '今天收盘' : '下个交易日收盘') + '低于这个价，并且上证收跌，就触发' +
+      (live0 ? '（上证现在 ' + sgn(bp0, 2) + '%' + (bp0 >= 0 ? '，是涨的，收盘仍涨就不出手' : '') + '）' : '（按上证收跌 0.5%、平开估算）') + '。离得最近的在上面。</div>' +
+      '<div class="tw"><table><thead><tr><th>ETF</th><th class="r">' + (live0 ? '现价' : '收盘') + '</th><th class="r">触发价</th><th class="r">还要跌</th></tr></thead><tbody>' +
+      trs.slice(0, 8).map(trow).join("") + '</tbody></table></div>' +
+      (trs.length > 8 ? '<details class="fold"><summary>其余 ' + (trs.length - 8) + ' 只</summary><div class="tw"><table><tbody>' + trs.slice(8).map(trow).join("") + '</tbody></table></div></details>' : '');
   }
   var fw = scForward();
   h += '<div class="kpis" style="margin-top:12px">' +
