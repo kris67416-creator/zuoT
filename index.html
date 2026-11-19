@@ -2221,7 +2221,7 @@ var SKEY = "ztScan_v1";
 var SCAN_DEFAULT = ["510300", "510500", "512100", "159915", "588000", "510050", "512880", "512480", "159995",
   "515030", "515790", "512170", "512010", "512690", "159928", "512660", "512800", "512200", "515220", "512400",
   "159819", "512980", "515050", "159583", "516160", "562500", "159611"];
-var SC = { list: SCAN_DEFAULT.slice(), busy: false, at: 0, atDay: "", atMin: 0, D: {}, err: "", N: { am: "", pm: "" } };
+var SC = { list: SCAN_DEFAULT.slice(), busy: false, at: 0, atDay: "", atMin: 0, D: {}, PX: {}, err: "", N: { am: "", pm: "" } };
 (function () {
   try {
     var r = localStorage.getItem(SKEY);
@@ -2255,14 +2255,20 @@ function scanLoad(force) {
   if (!force && !stale) return Promise.resolve();
   SC.busy = true; SC.err = "";
   return loadBench().then(function (bench) {
-    var codes = scCodes(), ok = 0;
-    return Promise.all(codes.map(function (c) {
+    var codes = scCodes(), ok = 0, want = codes.slice(), inList = {};
+    codes.forEach(function (c) { inList[c] = 1; var p = SIG_PROXY[c]; if (p && want.indexOf(p) < 0) want.push(p); });
+    return Promise.all(want.map(function (c) {
       return kCached(secid(c), 400).then(function (r) {
         if (!r || !r.data || !r.data.klines) return;
-        var dl = SW.parseK(r.data.klines);
-        SC.D[c] = { code: c, name: r.data.name, daily: dl, ser: SW.buildSeries(dl, bench, SC_P) }; ok++;
+        var dl = SW.parseK(r.data.klines), o = { code: c, name: r.data.name, daily: dl, ser: SW.buildSeries(dl, bench, SC_P) };
+        if (inList[c]) { SC.D[c] = o; ok++; } else SC.PX[c] = o;   /* 只是拿来出信号的（不在列表里）单独放 */
       }, function () { });
     })).then(function () {
+      /* 历史太短的，用同指数 ETF 的分位出信号（价格、股数仍按自己） */
+      codes.forEach(function (c) {
+        var p = SIG_PROXY[c], P = p && (SC.D[p] || SC.PX[p]), D = SC.D[c];
+        if (D && P && P.daily.length > 200) { D.ser = proxySer(D.daily, P.daily, P.ser); D.proxy = p; }
+      });
       if (!ok) throw new Error("一只都没取到");
       SC.at = Date.now(); SC.atDay = d; SC.atMin = m;
     });
@@ -2324,12 +2330,23 @@ function scTrigger(D) {
     var cnt = 0; scores.forEach(function (v) { if (v <= s) cnt++; });
     return cnt / scores.length * 100;
   }
-  var lo = pc * 0.80, hi = pc * 1.03;
-  if (pctAt(lo) > 10) return { none: true, pc: pc, live: live, bp: bp };
-  if (pctAt(hi) <= 10) return { px: hi, pc: pc, live: live, bp: bp, ref: cur ? cur.c : pc };
+  var lo = pc * 0.80, hi = pc * 1.03, pd = base[nb - 1].d;
+  if (pctAt(lo) > 10) return { none: true, pc: pc, live: live, bp: bp, pd: pd };
+  if (pctAt(hi) <= 10) return { px: hi, pc: pc, live: live, bp: bp, ref: cur ? cur.c : pc, pd: pd };
   for (var it = 0; it < 30; it++) { var mid = (lo + hi) / 2; if (pctAt(mid) <= 10) lo = mid; else hi = mid; }
   var ref = cur ? cur.c : pc;
-  return { px: lo, pc: pc, live: live, bp: bp, ref: ref, need: (lo / ref - 1) * 100, nowPct: cur ? pctAt(cur.c) : null };
+  return { px: lo, pc: pc, live: live, bp: bp, ref: ref, need: (lo / ref - 1) * 100, nowPct: cur ? pctAt(cur.c) : null, pd: pd };
+}
+/* 用同指数 ETF 出信号的：触发价按它算，再按同一天的收盘价比例换算成自己的价格（两只同涨同跌） */
+function scTriggerOf(D) {
+  if (!D.proxy) return scTrigger(D);
+  var P = SC.D[D.proxy] || SC.PX[D.proxy]; if (!P) return null;
+  var t = scTrigger(P); if (!t || !(t.pc > 0)) return null;
+  var b = null; for (var i = D.daily.length - 1; i >= 0; i--) if (D.daily[i].d === t.pd) { b = D.daily[i]; break; }
+  if (!b) return null;
+  var k = b.c / t.pc, o = {}; for (var key in t) o[key] = t[key];
+  ["px", "pc", "ref"].forEach(function (x) { if (isFinite(o[x])) o[x] = o[x] * k; });
+  o.via = D.proxy; return o;
 }
 function scShares(px) {
   var amt = S.F.notional > 0 ? S.F.notional : 50000;
@@ -2340,6 +2357,7 @@ function scForward() {
   var today = bjDate(), m = bjMin(), out = { base: [], nb: [] };
   Object.keys(SC.D).forEach(function (c) {
     var D = SC.D[c], dl = D.daily, n = dl.length;
+    if (D.proxy && SC.D[D.proxy]) return;   /* 和它的信号来源是同一笔，不重复记 */
     var lastDone = (dl[n - 1].d === today && isWk() && m < 900) ? n - 2 : n - 1;
     for (var k = 0; k < n - 1; k++) {
       if (dl[k].d < SCAN_FREEZE || !scSig(D, k)) continue;
@@ -2380,7 +2398,7 @@ function renderScanCard() {
     h += '<div class="tw" style="margin-top:12px"><table><thead><tr><th>ETF</th><th class="r">信号日</th><th class="r">分位</th><th>要做的</th></tr></thead><tbody>' +
       rows.map(function (r) {
         var c = r.x.st.t === "buy" ? "dn" : (r.x.st.t === "sell" || r.x.st.t === "hold" ? "up" : "m");
-        return '<tr><td>' + esc(r.D.name) + '<div class="m" style="font-size:11px">' + esc(r.D.code) + '</div></td><td class="r">' + esc(r.x.d.slice(5)) +
+        return '<tr><td>' + esc(r.D.name) + '<div class="m" style="font-size:11px">' + esc(r.D.code) + (r.D.proxy ? ' · 信号按 ' + esc(r.D.proxy) : '') + '</div></td><td class="r">' + esc(r.x.d.slice(5)) +
           '</td><td class="r">' + fx(r.x.pct, 0) + '%</td><td class="' + c + '" style="font-size:12px">' + esc(r.x.st.txt) +
           (r.x.st.t === "buy" || r.x.st.t === "prov" ? '<div class="m">约 ' + scShares(r.D.daily[r.D.daily.length - 1].c) + ' 股（每笔 ' + fx((S.F.notional || 50000) / 1e4, 0) + ' 万，可在「设置」改）</div>' : '') + '</td></tr>';
       }).join("") + '</tbody></table></div>';
@@ -2389,7 +2407,7 @@ function renderScanCard() {
   }
   /* 每只 ETF 的触发价 */
   var trs = [];
-  codes.forEach(function (c) { var D = SC.D[c]; if (!D) return; var t = null; try { t = scTrigger(D); } catch (e) { } if (t) trs.push({ D: D, t: t }); });
+  codes.forEach(function (c) { var D = SC.D[c]; if (!D) return; var t = null; try { t = scTriggerOf(D); } catch (e) { } if (t) trs.push({ D: D, t: t }); });
   if (trs.length) {
     var live0 = trs[0].t.live, bp0 = trs[0].t.bp;
     trs.sort(function (a, b) { return (a.t.none ? 1e9 : -a.t.need) - (b.t.none ? 1e9 : -b.t.need); });
@@ -2397,7 +2415,7 @@ function renderScanCard() {
       var t = x.t, D = x.D, name = esc(D.name.replace(/ETF.*$/, "ETF"));
       if (t.none) return '<tr><td>' + name + '</td><td class="r">' + fx(t.pc, 3) + '</td><td class="r m" colspan="2">跌 20% 也不触发</td></tr>';
       var hit = t.need >= 0;
-      return '<tr><td>' + name + '<div class="m" style="font-size:11px">' + esc(D.code) + '</div></td><td class="r">' + fx(t.ref, 3) + '</td><td class="r"><b class="dn">' + fx(t.px, 3) + '</b></td>' +
+      return '<tr><td>' + name + '<div class="m" style="font-size:11px">' + esc(D.code) + (t.via ? ' · 按 ' + esc(t.via) + ' 换算' : '') + '</div></td><td class="r">' + fx(t.ref, 3) + '</td><td class="r"><b class="dn">' + fx(t.px, 3) + '</b></td>' +
         '<td class="r ' + (hit ? "wr" : "") + '">' + (hit ? (t.live ? '已在触发区' : '平收就触发') : fx(t.need, 1) + '%') + '</td></tr>';
     };
     h += '<div class="sub" style="margin-top:14px"><b>每只的触发价</b>：' + (live0 ? '今天收盘' : '下个交易日收盘') + '低于这个价，并且上证收跌，就触发' +
@@ -2474,6 +2492,13 @@ var FLAB = { day1: "当日涨跌", rs: "相对大盘", run: "连涨连跌" };
 var KEY = "ztSite_v2", KEY_V1 = "ztSite_v1";
 var FREEZE = "2026-11-17";      /* v2 规则冻结日：这天之后的信号才算前向 */
 var HIST = 800;                 /* 每只标的取约 3 年日线 */
+/* 用同指数、历史更长的 ETF 出信号：589360（科创50ETF国泰，2026 年上市，历史不够算分位）和 588000（科创50ETF华夏）
+   跟踪同一指数，日收益相关 0.995（2026-11-19 核对 98 天）。信号、分位按 588000；价格、股数、盈亏按自己。 */
+var SIG_PROXY = { "589360": "588000" };
+function proxySer(own, pd, pser) {
+  var pm = {}; pser.forEach(function (s, i) { if (s) pm[pd[i].d] = s; });
+  return own.map(function (x) { return pm[x.d] || null; });
+}
 
 /* 证据（t 按交易日聚类，净收益已扣成本）
    etf   = 规则冻结后，64 只随机抽取、从未用过的 ETF（干净的样本外）
@@ -2915,13 +2940,17 @@ function loadOne(it) {
       LIVE = -1; return SW.parseK(sn.daily);
     }).then(function (daily) {
       var pq = (LIVE === -1) ? Promise.resolve(null) : apiGet(qURL(sid)).catch(function () { return null; });
-      return pq.then(function (qr) {
+      var px = SIG_PROXY[it.code];
+      /* 400 根就够算分位，和 ETF 扫描共用同一份存档，不多请求 */
+      var pp = (px && LIVE !== -1) ? kCached(secid(px), 400).then(function (r) { return SW.parseK(r.data.klines); }, function () { return null; }) : Promise.resolve(null);
+      return Promise.all([pq, pp]).then(function (a) {
+        var qr = a[0], pdl = a[1] && a[1].length > 200 ? a[1] : null;
         var q = qr && qr.data ? qr.data : null;
         var P = ruleP();
-        var ser = SW.buildSeries(daily, bench, P);
+        var ser = pdl ? proxySer(daily, pdl, SW.buildSeries(pdl, bench, P)) : SW.buildSeries(daily, bench, P);
         var valid = ser.filter(function (s) { return s; });
         DATA[it.code] = {
-          code: it.code, kind: it.kind, daily: daily, ser: ser, P: P,
+          code: it.code, kind: it.kind, daily: daily, ser: ser, P: P, proxy: pdl ? px : "",
           name: q ? q.f58 : (sn ? sn.name : it.code), nValid: valid.length,
           last: valid.length ? valid[valid.length - 1] : null,
           q: q ? { now: +q.f43, prev: +q.f60, pct: +q.f170, hi: +q.f44, lo: +q.f45, amp: +q.f171 }
@@ -3378,7 +3407,7 @@ function instCard(it) {
   return '<div class="icard' + cls + '" data-go="' + esc(it.code) + '">' +
     '<div class="ihead"><div style="flex:1;min-width:0">' +
     '<div class="iname">' + esc(D.name) + ' ' + tag + '</div>' +
-    '<div class="icode">' + esc(D.code) + ' · ' + (D.kind === "etf" ? "ETF" : "股票") + '</div></div>' +
+    '<div class="icode">' + esc(D.code) + ' · ' + (D.kind === "etf" ? "ETF" : "股票") + (D.proxy ? ' · 信号按 ' + esc(D.proxy) + '（同指数）' : '') + '</div></div>' +
     '<div><div class="ipx ' + cl(q.pct) + '">' + fx(px, 3) + '</div>' +
     '<div class="ichg ' + cl(q.pct) + '">' + sgn(q.pct || 0, 2) + '%</div></div></div>' +
     '<div class="istat">' +
