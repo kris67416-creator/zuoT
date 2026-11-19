@@ -1133,17 +1133,35 @@ function dkLoadHist() {
   };
   DK_US.forEach(function (u) { jobs[u[0]] = kURL(u[1], 320); });
   DK_ETF.forEach(function (e) { jobs["E" + e[0]] = kURL(e[1], 320); });
-  var keys = Object.keys(jobs), H = {};
+  jobs.ff = dkFfDayURL();
+  var keys = Object.keys(jobs), R = {};
   return Promise.all(keys.map(function (k) {
-    return histGet(jobs[k]).then(function (r) { H[k] = dkK(r); }, function () { H[k] = null; });
-  }).concat([histGet(dkFfDayURL()).then(function (r) {
-    H.ff = (r && r.data && r.data.klines ? r.data.klines : []).map(function (s) {
-      var a = s.split(","); return { d: a[0], zl: +a[1], zlp: +a[6] };
-    });
-  }, function () { H.ff = null; })])).then(function () {
-    if (!H.gx || H.gx.length < 150) throw new Error("光迅日线没取到");
-    DK.H = H; DK.hAt = bjDate(); DK.hMin = bjMin();
+    return histGet(jobs[k]).then(function (r) { R[k] = r; }, function () { R[k] = null; });
+  })).then(function () {
+    var g = dkK(R.gx);
+    if (!g || g.length < 150) throw new Error("光迅日线没取到");
+    DK.R = R; DK.RU = jobs; DK.hT = Date.now();
   });
+}
+/* 今天（或最近一个交易日）这一根日K用实时报价拼（和 ETF 页同一个 kMergeQ）：历史服务器只在存档缺了上一个交易日时才去取，
+   盘中、收盘后都不再为今天这根去请求它；收盘后拼好的连同存档写回手机 */
+var DK_QSID = { gx: GX_SID, sec: GX_SEC, IMM: "220.IMM", IFM: "220.IFM", S852: "1.000852", S300: "1.000300" };
+DK_ETF.forEach(function (e) { DK_QSID["E" + e[0]] = e[1]; });
+function dkApplyQ() {
+  var R = DK.R; if (!R) return;
+  var u = (DK.L && DK.L.u) || {}, H = {};
+  Object.keys(R).forEach(function (k) {
+    var r = R[k];
+    if (k === "ff") {
+      H.ff = r && r.data && r.data.klines ? r.data.klines.map(function (s) { var a = s.split(","); return { d: a[0], zl: +a[1], zlp: +a[6] }; }) : null;
+      return;
+    }
+    if (r && DK_QSID[k]) r = kMergeQ(r, u[DK_QSID[k]], DK_QSID[k], DK.RU[k]);
+    H[k] = dkK(r);
+  });
+  var o = DK.H && DK.H.gx, n = H.gx;
+  if (!o || !o.length || !n || o[o.length - 1].d !== n[n.length - 1].d) DK.RV = null;
+  DK.H = H;
 }
 function dkQuoteURL() {
   return "https://push2.eastmoney.com/api/qt/stock/get?invt=2&fltt=2&secid=" + GX_SID +
@@ -1156,7 +1174,7 @@ function dkTrendsURL() {
 function dkLoadLive() {
   var L = {}, sids = DK_US.map(function (u) { return u[1]; })
     .concat(["105.NVDA", "100.NDX", "107.KWEB", "107.FXI", "220.IMM", "220.IFM", "1.000852", "1.000300",
-      "1.000001", "0.399001", GX_SEC]).concat(DK_ETF.map(function (e) { return e[1]; }));
+      "1.000001", "0.399001", GX_SEC, GX_SID]).concat(DK_ETF.map(function (e) { return e[1]; }));
   var ymd = dkYmd();
   return Promise.all([
     apiGet(dkQuoteURL())
@@ -1164,7 +1182,7 @@ function dkLoadLive() {
     apiGet(dkTrendsURL())
       .then(function (r) { L.tr = r && r.data ? r.data : null; }, function () { L.tr = null; }),
     apiGet("https://push2.eastmoney.com/api/qt/ulist.np/get?fltt=2&secids=" + sids.join(",") +
-      "&fields=f2,f3,f6,f12,f13,f14,f18,f104,f105,f106,f124&ut=" + UT)
+      "&fields=f2,f3,f4,f5,f6,f7,f8,f12,f13,f14,f15,f16,f17,f18,f104,f105,f106,f124&ut=" + UT)
       .then(function (r) { var m = {}; ((r && r.data && r.data.diff) || []).forEach(function (x) { m[x.f13 + "." + x.f12] = x; }); L.u = m; },
         function () { L.u = {}; }),
     apiGet(dkFfMinURL()).then(function (r) { L.ffm = r && r.data && r.data.klines ? r.data.klines : []; }, function () { L.ffm = []; }),
@@ -1230,11 +1248,13 @@ setInterval(function () { try { dkFastTick(); } catch (e) { dkFastBusy = false; 
 function deskLoad() {
   if (DK.busy) return Promise.resolve();
   DK.busy = true; DK.err = "";
-  var needH = !DK.H || DK.hAt !== bjDate() || (isWk() && DK.hMin < 905 && bjMin() >= 905);
+  /* 日K每 2 分钟看一次存档够不够新（只读手机里的，不够新才请求历史服务器） */
+  var needH = !DK.R || Date.now() - (DK.hT || 0) > 120000;
   var ph = needH ? dkLoadHist() : Promise.resolve();
   /* 公告/快讯不挡页面：后台取，取到再刷新光迅页 */
   if (!DK.N || Date.now() - DK.nAt > 240000) dkLoadNews().then(function () { if (typeof PAGE !== "undefined" && PAGE === "gx") renderDesk(); }, function () { });
   return Promise.all([ph, dkLoadLive()]).then(function () {
+    dkApplyQ();
     DK.busy = false;
     /* 复盘用的 5 分钟K：后台取，不挡页面 */
     dkLoadM5().then(function () { DK.RV = null; if (typeof PAGE !== "undefined" && PAGE === "gx") renderDesk(); }, function () { });
@@ -1529,14 +1549,16 @@ function dkM5URL() {
   return "https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=" + GX_SID + "&ut=" + UT +
     "&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61&klt=5&fqt=1&end=20500101&lmt=1000";
 }
-/* 5 分钟K：一天取一次，收盘后再补一次（拿到当天完整数据） */
+/* 5 分钟K：存档早于最近一次收盘（15:05）才重取——也就是每个交易日收盘后取一次 */
 function dkLoadM5() {
-  var day = bjDate(), m = bjMin();
-  if (DK.M5 && DK.m5Day === day && !(DK.m5Min < 905 && m >= 905)) return Promise.resolve();
+  if (DK.M5 && DK.m5At >= bjLastAt(Date.now(), 905, WKD)) return Promise.resolve();
+  if (DK.M5 && Date.now() - (DK.m5Try || 0) < 120000) return Promise.resolve();
+  DK.m5Try = Date.now();
   return histGet(dkM5URL()).then(function (r) {
     var k = (r && r.data && r.data.klines) || [];
+    if (DK.M5 && k.length && DK.m5Last === k[k.length - 1]) { DK.m5At = r._at || 0; return; }
     DK.M5 = k.map(function (s) { var a = s.split(","); return { d: a[0].slice(0, 10), hm: a[0].slice(11, 16), o: +a[1], c: +a[2], h: +a[3], l: +a[4], v: +a[5], a: +a[6] }; });
-    DK.m5Day = day; DK.m5Min = m; DK.RV = null; DK.m5Err = "";
+    DK.m5Last = k.length ? k[k.length - 1] : ""; DK.m5At = r._at || 0; DK.RV = null; DK.m5Err = "";
   }, function (e) { DK.m5Err = (e && e.message) || "取不到"; });
 }
 /* 某个检查点的实时 B/S（复盘和盘中共用）：px 现价；sU/sD 剩余区间尺度（小数）；lvmap 价位表 */
@@ -1935,14 +1957,14 @@ function dkRender(el) {
   if (!F) {
     h = '<div class="card">' + (DK.err ? '<div class="box bad" style="margin-top:0"><b>数据没取到</b>' + esc(DK.err) + '。' +
       (hisBlocked() || /限流/.test(DK.err) ? '东方财富的历史K线服务器在短时间内收到太多请求时，会暂时拒绝这台设备，一般过一阵自动恢复；实时价格不受影响。' +
-        '页面 10 分钟内不会再去请求，避免越刷越久。以后历史数据会存在手机里，同一天打开不会再重复下载。' : '点右上角「刷新」重试。') + '</div>'
+        '页面 10 分钟内不会再去请求，避免越刷越久。取到一次以后就存在手机里，之后一天最多下载一次，盘中不再请求它。' : '点右上角「刷新」重试。') + '</div>'
       : '<div class="skel" style="height:120px"></div><div class="sub" style="margin-top:10px">正在取光迅、美股、期指、资金流… <b class="ldProg"></b></div>') + '</div>';
     el.innerHTML = h; return;
   }
   var q = F.q || {}, px = +q.f43 > 0 ? +q.f43 : F.last.c, pct = isFinite(+q.f170) ? +q.f170 : F.last.pct;
   if (NC_USED) h += ncBox();
   if (HIS.stale && HIS.stale !== bjDate()) h += '<div class="box warn" style="margin:0 0 16px"><b>日K用的是 ' + esc(HIS.stale.slice(5)) + ' 存在手机里的那份</b>' +
-    '东方财富的历史K线服务器暂时拒绝了请求（短时间请求太多会被限流）。实时价格、分时、资金这些走另一台服务器，照常更新；B/S 用的 ATR、均线等按那天的日K算。</div>';
+    '东方财富的历史K线服务器暂时拒绝了请求（请求太多会被限流）。最近一个交易日那根已经用实时报价补上；如果中间还缺了别的交易日，ATR、均线会略有偏差。实时价格、分时、资金走另一台服务器，照常更新。</div>';
   /* 顶部 */
   h += '<div class="hero"><div class="hrow"><span class="hk">光迅科技</span><span class="hv"><span class="' + cl(pct) + '" style="font-size:20px">' + fx(px, 2) +
     '</span> <span class="' + cl(pct) + '">' + sgn(pct, 2) + '%</span>' + (+q.f71 > 0 ? ' <span class="m" style="font-weight:400">均价 ' + fx(+q.f71, 2) + '</span>' : '') + '</span></div>' +
@@ -2225,11 +2247,11 @@ var SC_P = (function () {
   w.day1 = 100; w.rs = 100; w.run = 100;
   return { w: w, normWin: 120, pctWin: 120, minWin: 40 };
 })();
-/* 盘中每 20 分钟刷新一次；15:00 后补一次拿收盘价 */
+/* 盘中每 20 分钟刷新一次；15:02 后补一次拿收盘价，15:05 后再一次（把今天这根写回手机） */
 function scanLoad(force) {
   if (SC.busy) return Promise.resolve();
   var m = bjMin(), d = bjDate();
-  var stale = !SC.at || Date.now() - SC.at > 20 * 60000 || SC.atDay !== d || (SC.atMin < 900 && m >= 900);
+  var stale = !SC.at || Date.now() - SC.at > 20 * 60000 || SC.atDay !== d || (SC.atMin < 902 && m >= 902) || (SC.atMin < 905 && m >= 905);
   if (!force && !stale) return Promise.resolve();
   SC.busy = true; SC.err = "";
   return loadBench().then(function (bench) {
@@ -2254,7 +2276,7 @@ function scSig(D, k) {
 /* 某只 ETF 当前要做的事 */
 function scState(D) {
   var n = D.daily.length, today = bjDate(), m = bjMin(), wk = isWk();
-  var hasToday = D.daily[n - 1].d === today, prov = hasToday && wk && m < 900;
+  var hasToday = D.daily[n - 1].d === today, prov = hasToday && wk && m < 902;
   var morning = !hasToday && wk && m < 570;
   var res = [];
   for (var k = n - 1; k >= Math.max(0, n - 4); k--) {
@@ -2639,11 +2661,74 @@ function netProbe() {
     });
   });
 }
-/* ===== 历史数据：存在手机里（IndexedDB），一天只取一次全量，收盘后补一次 =====
-   东财的历史K线服务器（push2his）对短时间内大量请求会限流，被限后要很久才恢复。所以：
-   · 同一天打开/刷新页面都用手机里存的，不重新下载；
-   · 历史服务器连续失败 4 次就 10 分钟内不再请求、也不重试；
-   · 取不到就用以前存的那份，并在页面上标出日期。实时行情走另一台服务器（push2），不受影响。 */
+/* ===== 历史数据：存在手机里（IndexedDB），尽量不碰历史K线服务器 =====
+   东财的历史K线服务器（push2his）对请求多的设备会限流，被限后要很久才恢复
+   （11-19 实测：限流解除后，一次完整加载 53 个请求，这台电脑马上又被拒）。所以：
+   · 日K只在「存的那份缺了上一个交易日」时才重新下载，一天最多一次；
+     今天这一根用实时行情服务器（push2）的报价拼，字段和日K接口一一对应（11-19 收盘后逐项核对，完全一致）。
+     盘中每分钟的刷新不再请求历史服务器（以前每次刷新每只都要取最近 3 根，一天上千次）；
+   · 5 分钟K、资金流日K：存的那份早于最近一次收盘才重取（收盘后一次）；美股日K：北京 5:05 美股收盘后一次；
+   · 历史请求一个一个发，间隔 0.35 秒；连续失败 4 次就 10 分钟内不再请求、也不重试；
+   · 取不到就用以前存的那份，并在页面上标出日期。 */
+var WKD = [1, 2, 3, 4, 5];
+/* 不晚于 t 的、北京时间 hm（分钟）、星期在 days 里的最近一个时刻（真实毫秒） */
+function bjLastAt(t, hm, days) {
+  var b = new Date(t + 288e5), x = Date.UTC(b.getUTCFullYear(), b.getUTCMonth(), b.getUTCDate()) + hm * 60000 - 288e5;
+  for (var i = 0; i < 10; i++, x -= 864e5) if (x <= t && days.indexOf(new Date(x + 288e5).getUTCDay()) >= 0) return x;
+  return 0;
+}
+function bjMidnight(t) { var b = new Date(t + 288e5); return Date.UTC(b.getUTCFullYear(), b.getUTCMonth(), b.getUTCDate()) - 288e5; }
+function bjDayMinMs(day, min) { var a = String(day).split("-"); return Date.UTC(+a[0], +a[1] - 1, +a[2]) + (+min || 0) * 60000 - 288e5; }
+function prevWkDay(d) {
+  var a = d.split("-"), t = Date.UTC(+a[0], +a[1] - 1, +a[2]);
+  do { t -= 864e5; } while (new Date(t).getUTCDay() === 0 || new Date(t).getUTCDay() === 6);
+  return new Date(t).toISOString().slice(0, 10);
+}
+/* d = A 股日K（今天那根用报价拼）；full = 5 分钟K、资金流日K；us = 美股日K */
+function hisMode(url) {
+  var mk = (/secid=(\d+)\./.exec(url) || [])[1];
+  if (/klt=5&/.test(url) || url.indexOf("/fflow/") >= 0) return "full";
+  if (mk === "100" || mk === "105" || mk === "106" || mk === "107") return "us";
+  return "d";
+}
+/* 存档至少要是这个时刻之后取的，才算够新 */
+function hisNeedAt(url) {
+  var now = Date.now(), md = hisMode(url);
+  if (md === "full") return bjLastAt(now, 905, WKD);
+  if (md === "us") return bjLastAt(now, 305, [2, 3, 4, 5, 6]);
+  return bjLastAt(bjMidnight(now) - 1, 905, WKD);
+}
+/* 最近一个交易日（工作日 9:15 起算今天；节假日不认识，按工作日算） */
+function bjLatestTD() { var d = bjDate(); return (isWk() && bjMin() >= 555) ? d : prevWkDay(d); }
+function kLastDate(r) { var k = r && r.data && r.data.klines; return k && k.length ? k[k.length - 1].slice(0, 10) : ""; }
+/* A 股日K：只缺最近一个交易日也算够新（那一根用报价补） */
+function hisFresh(url, at, r) {
+  if (at >= hisNeedAt(url)) return true;
+  return hisMode(url) === "d" && kLastDate(r) >= prevWkDay(bjLatestTD());
+}
+/* 盘中取到的日K，今天那根还没走完：不留（收盘后用报价补上最终的），免得半根K线被当成收盘 */
+function hisStrip(url, data) {
+  var k = data.klines;
+  if (hisMode(url) === "d" && k.length > 1 && k[k.length - 1].slice(0, 10) === bjDate() && bjMin() < 905) k = k.slice(0, -1);
+  return { name: data.name, klines: k };
+}
+/* 历史请求排队：一次一个，间隔 0.35 秒 */
+var HQ = { busy: false, q: [], last: 0, gap: 350 };
+function hisRun(fn) {
+  NQ.total++;
+  return new Promise(function (res, rej) { HQ.q.push({ fn: fn, res: res, rej: rej }); hisPump(); });
+}
+function hisPump() {
+  if (HQ.busy || !HQ.q.length) return;
+  HQ.busy = true;
+  setTimeout(function () {
+    var it = HQ.q.shift(), blk = hisBlocked();
+    if (!blk) HQ.last = Date.now();
+    (blk ? Promise.reject(new Error("东财历史数据暂时限流")) : it.fn()).then(
+      function (r) { NQ.done++; HQ.busy = false; it.res(r); hisPump(); },
+      function (e) { NQ.done++; HQ.busy = false; it.rej(e); hisPump(); });
+  }, hisBlocked() ? 0 : Math.max(0, HQ.last + HQ.gap - Date.now()));
+}
 var IDBP = null;
 function idbOpen() {
   if (IDBP) return IDBP;
@@ -2670,46 +2755,108 @@ function idbPut(key, val) { return idbOpen().then(function (db) { if (!db) retur
 var HIS = { fails: 0, until: 0, stale: "" };
 function hisBlocked() { return Date.now() < HIS.until; }
 function hisFail() { HIS.fails++; if (HIS.fails >= 4) HIS.until = Date.now() + 10 * 60000; }
+function idbExpire(url) { return idbGet(url).then(function (c) { if (c) { c.exp = 1; idbPut(url, c); } }); }
+/* 返回 {data, _at: 这份数据是什么时候取的, _stale: 取不到、用的旧存档的日期} */
 function histGet(url) {
   if (NET_OFF) return ncGet(url);
-  var day = bjDate(), m = bjMin(), wk = isWk();
   return idbGet(url).then(function (c) {
-    var fresh = c && c.day === day && !(wk && c.min < 905 && m >= 905);
-    if (fresh) return c.r;
-    if (hisBlocked()) { if (c) { HIS.stale = c.day; return c.r; } throw new Error("东财历史数据暂时限流"); }
-    return nqRun(function () { return hisBlocked() ? Promise.reject(new Error("东财历史数据暂时限流")) : httpGet(url); }).then(function (r) {
+    var at = c ? (c.at || bjDayMinMs(c.day, c.min)) : 0;
+    if (c && !c.exp && hisFresh(url, at, c.r)) return { data: c.r.data, _at: at };
+    function old() { HIS.stale = c.day; return { data: c.r.data, _at: at, _stale: c.day }; }
+    if (hisBlocked()) { if (c) return old(); throw new Error("东财历史数据暂时限流"); }
+    return hisRun(function () { return hisBlocked() ? Promise.reject(new Error("东财历史数据暂时限流")) : httpGet(url); }).then(function (r) {
       HIS.fails = 0;
-      if (r && r.data && r.data.klines && r.data.klines.length)
-        idbPut(url, { day: day, min: m, r: { data: { name: r.data.name, klines: r.data.klines } } });
+      if (r && r.data && r.data.klines && r.data.klines.length) {
+        var t = Date.now(), dt = hisStrip(url, r.data);
+        idbPut(url, { day: bjDate(), min: bjMin(), at: t, r: { data: dt } });
+        return { data: dt, _at: t };
+      }
+      if (c) return old();
       return r;
     }, function (e) {
       if (!hisBlocked()) hisFail();
-      if (c) { HIS.stale = c.day; return c.r; }
+      if (c) return old();
       throw hisBlocked() ? new Error("东财历史数据暂时限流") : e;
     });
   });
 }
-/* 日线历史一天只取一次全量；之后每次刷新只取最近 3 根合并进去 */
-var KC = {};
-function kCached(sid, lmt) {
-  var c = KC[sid], day = bjDate();
-  if (!NET_OFF && c && c.day === day && c.lmt >= lmt) {
-    if (hisBlocked()) return Promise.resolve({ data: { name: c.name, klines: c.klines } });
-    return apiGet(kURL(sid, 3)).then(function (r) {
-      var arr = c.klines.slice();
-      ((r && r.data && r.data.klines) || []).forEach(function (s) {
-        var d = s.slice(0, 10), j = arr.length - 1;
-        while (j >= 0 && arr[j].slice(0, 10) > d) j--;
-        if (j >= 0 && arr[j].slice(0, 10) === d) arr[j] = s; else arr.splice(j + 1, 0, s);
-      });
-      c.klines = arr;
-      return { data: { name: c.name, klines: arr } };
-    }, function () { return { data: { name: c.name, klines: c.klines } }; });
+/* ===== 实时报价（push2，不限流）：一批标的合成一个请求，45 秒内复用 ===== */
+var QB = { m: {}, want: [], pend: null };
+function qbURL(sids) {
+  return "https://push2.eastmoney.com/api/qt/ulist.np/get?fltt=2&secids=" + sids.join(",") +
+    "&fields=f2,f3,f4,f5,f6,f7,f8,f12,f13,f14,f15,f16,f17,f18,f124&ut=" + UT;
+}
+function quoteOf(sid) {
+  var e = QB.m[sid];
+  if (e && Date.now() - e.t < 45000) return Promise.resolve(e.x);
+  if (QB.want.indexOf(sid) < 0) QB.want.push(sid);
+  if (!QB.pend) QB.pend = sleep(30).then(function () {
+    var w = QB.want, ch = []; QB.want = []; QB.pend = null;
+    for (var i = 0; i < w.length; i += 60) ch.push(w.slice(i, i + 60));
+    return Promise.all(ch.map(function (c) {
+      return apiGet(qbURL(c)).then(function (r) {
+        var t = Date.now(), got = {};
+        ((r && r.data && r.data.diff) || []).forEach(function (x) { got[x.f13 + "." + x.f12] = x; });
+        c.forEach(function (s) { QB.m[s] = { t: t, x: got[s] || null }; });
+      }, function () { });
+    }));
+  });
+  return QB.pend.then(function () { var e2 = QB.m[sid]; return e2 ? e2.x : null; });
+}
+function qDate(x) { return x && +x.f124 > 0 ? new Date(x.f124 * 1000 + 288e5).toISOString().slice(0, 10) : ""; }
+/* 用报价拼一根日K，字段顺序同日K接口：日期,开,收,高,低,量,额,振幅,涨跌幅,涨跌额,换手 */
+function qLine(x) {
+  if (!x || !(+x.f17 > 0) || !(+x.f2 > 0) || !(+x.f5 > 0)) return "";
+  var d = qDate(x); if (!d) return "";
+  return [d].concat(["f17", "f2", "f15", "f16", "f5", "f6", "f7", "f3", "f4", "f8"].map(function (k) {
+    var v = x[k]; return (v === "-" || v == null || v === "" || !isFinite(+v)) ? "0" : String(v);
+  })).join(",");
+}
+/* 把报价拼的那根并进日K。新的一天：先核对昨收——对不上说明除权除息了，按比例把以前的价格调一下（前复权的近似），
+   并让存档过期，下次从历史服务器取东财复权好的那份。
+   这根已经定了（日期早于今天，或今天 15:05 以后）、前面也不缺交易日：连同存档写回手机，下一个交易日就不用找历史服务器 */
+var KADJ = {}, KPERS = {};
+function kMergeQ(r, x, sid, url) {
+  var s = qLine(x);
+  if (!s || !r || !r.data || !r.data.klines || !r.data.klines.length) return r;
+  var kl = r.data.klines, last = kl[kl.length - 1], ld = last.slice(0, 10), d = s.slice(0, 10), arr;
+  if (d < ld) return r;
+  if (d === ld) arr = kl.slice(0, -1);
+  else {
+    arr = kl;
+    var lc = +last.split(",")[2], f = +x.f18 / lc;
+    if (/^[01]\./.test(sid) && !/^1\.000|^0\.399/.test(sid) && ld === prevWkDay(d) &&
+        lc > 0 && f > 0 && Math.abs(f - 1) > 0.002 && Math.abs(f - 1) < 0.3) {
+      arr = kl.map(function (t) { var a = t.split(","); for (var j = 1; j <= 4; j++) a[j] = String(+(a[j] * f).toFixed(4)); return a.join(","); });
+      if (!KADJ[url]) { KADJ[url] = 1; idbExpire(url); delete KC[sid]; }
+    }
   }
-  return histGet(kURL(sid, lmt)).then(function (r) {
-    if (!NET_OFF && r && r.data && r.data.klines && r.data.klines.length)
-      KC[sid] = { day: day, lmt: lmt, name: r.data.name, klines: r.data.klines.slice() };
-    return r;
+  var out = { data: { name: r.data.name, klines: arr.concat([s]) }, _at: r._at, _stale: r._stale };
+  if (url && !KADJ[url] && KPERS[url] !== d && !(d === ld && last === s) && (d === ld || ld === prevWkDay(d)) &&
+      (d < bjDate() || (isWk() && bjMin() >= 905))) {
+    KPERS[url] = d;
+    idbPut(url, { day: bjDate(), min: bjMin(), at: Date.now(), r: { data: { name: out.data.name, klines: out.data.klines.slice(-kl.length) } } });
+  }
+  return out;
+}
+/* 日线：存档够新就不请求历史服务器；今天这根每次用报价拼 */
+var KC = {}, KP = {};
+function kCached(sid, lmt) {
+  var url = kURL(sid, lmt), c = KC[sid], p;
+  if (NET_OFF) return histGet(url);
+  /* 借用更长的那份时，写回也写到那份的地址 */
+  if (c && c.lmt >= lmt && hisFresh(url, c.at, c.r)) { p = Promise.resolve(c.r); url = kURL(sid, c.lmt); }
+  else if (KP[sid] && KP[sid].lmt >= lmt) { p = KP[sid].p; url = kURL(sid, KP[sid].lmt); }
+  else {
+    p = histGet(url).then(function (r) {
+      delete KP[sid];
+      if (r && r.data && r.data.klines && r.data.klines.length && !r._stale) KC[sid] = { lmt: lmt, at: r._at || Date.now(), r: r };
+      return r;
+    }, function (e) { delete KP[sid]; throw e; });
+    KP[sid] = { lmt: lmt, p: p };
+  }
+  return p.then(function (r) {
+    return quoteOf(sid).then(function (x) { return kMergeQ(r, x, sid, url); }, function () { return r; });
   });
 }
 function apiGet(url) {
@@ -2717,7 +2864,7 @@ function apiGet(url) {
   /* 历史服务器：被限流时不再请求，也不重试、不走 JSONP（那只会让限流更久） */
   if (url.indexOf("push2his.") >= 0) {
     if (hisBlocked()) return Promise.reject(new Error("东财历史数据暂时限流"));
-    return nqRun(function () { return hisBlocked() ? Promise.reject(new Error("东财历史数据暂时限流")) : httpGet(url); })
+    return hisRun(function () { return hisBlocked() ? Promise.reject(new Error("东财历史数据暂时限流")) : httpGet(url); })
       .then(function (r) { HIS.fails = 0; return r; }, function (e) { if (!hisBlocked()) hisFail(); throw e; });
   }
   return httpGetRetry(url).then(function (r) { TRANSPORT = TRANSPORT || "fetch"; return r; })
@@ -2801,6 +2948,8 @@ function refresh() {
   /* 先取当前页要的数据、取到就先画出来；ETF 扫描（28 只）放到最后在后台取，不挡光迅页 */
   return (NET_OFF ? Promise.resolve(-1) : netProbe()).then(function (st) {
     NET_OFF = st === -1;
+    /* 报价一次取齐（一个请求），后面每只拼今天那根日K时直接用 */
+    if (!NET_OFF) ["1.000001"].concat(S.inst.map(function (i) { return secid(i.code); }), scCodes().map(secid)).forEach(function (s) { quoteOf(s); });
     var onGx = PAGE === "gx", jobs = [];
     var pDesk = function () { return deskLoad().then(function () { stamp(); if (PAGE === "gx") render(); }); };
     var pInst = function () { return Promise.all(S.inst.map(loadOne)).then(function () { stamp(); if (PAGE !== "gx") render(); }); };
@@ -3719,7 +3868,8 @@ function maybeRefresh(minAge) {
 document.addEventListener("visibilitychange", function () { if (!document.hidden) maybeRefresh(); });
 window.addEventListener("focus", function () { maybeRefresh(); });
 window.addEventListener("pageshow", function () { maybeRefresh(); });
-setInterval(function () { if (mktOpen() || (isWk() && bjMin() >= 555 && bjMin() < 570)) maybeRefresh(60000); }, 30000);
+/* 15:02~15:08 再自动刷几次：拿到收盘后的最终报价，15:05 起把今天这根写回手机 */
+setInterval(function () { var m = bjMin(); if (mktOpen() || (isWk() && ((m >= 555 && m < 570) || (m >= 902 && m <= 908)))) maybeRefresh(60000); }, 30000);
 
 render();
 refresh();
