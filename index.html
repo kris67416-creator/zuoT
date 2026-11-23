@@ -268,7 +268,10 @@ table.lvlad tr.lvanc td{background:var(--surf2);color:var(--tx2)}
 .ebsh .nm{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .ebsh .m{font-size:12px}
 .ebsh .r{flex-shrink:0;font-size:13px;color:var(--tx2);white-space:nowrap}
-.ebst{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:13px;color:var(--tx2);margin-bottom:8px;line-height:1.55}
+.ebst{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:13px;color:var(--tx2);margin-bottom:6px;line-height:1.55}
+.ebrec{font-size:12.5px;color:var(--tx3);line-height:1.6;margin-bottom:2px}
+.ebrec b{color:var(--tx2)}.ebrec b.up{color:var(--up)}.ebrec b.dn{color:var(--dn)}
+.ebs details.fold{margin-top:6px}
 
 /* ===== WeUI 列表放进内容区：圆角分组（inset grouped） ===== */
 .wrap .weui-cells{border-radius:var(--r);overflow:hidden;margin-top:6px}
@@ -287,15 +290,15 @@ table.lvlad tr.lvanc td{background:var(--surf2);color:var(--tx2)}
 <div class="app">
 
 <div class="topbar">
-  <div class="tt"><h2 id="ttl">光迅</h2><div class="st" id="navFoot">加载中…</div></div>
+  <div class="tt"><h2 id="ttl">我的 ETF</h2><div class="st" id="navFoot">加载中…</div></div>
   <span class="sp"></span>
   <span class="pill dim" id="mkt">—</span>
   <button class="btn g sm" id="btnRefresh">刷新</button>
 </div>
 
 <div class="wrap">
-  <section class="page on" id="p-gx"></section>
-  <section class="page" id="p-dash"></section>
+  <section class="page" id="p-gx"></section>
+  <section class="page on" id="p-dash"></section>
   <section class="page" id="p-inst"></section>
   <section class="page" id="p-detail"></section>
   <section class="page" id="p-bt"></section>
@@ -304,13 +307,13 @@ table.lvlad tr.lvanc td{background:var(--surf2);color:var(--tx2)}
 </div>
 
 <div class="weui-tabbar" id="nav">
-  <button class="weui-tabbar__item weui-bar__item_on" data-p="gx">
-    <span class="tbi"><svg class="weui-tabbar__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19h16"/><path d="M7 15V9"/><path d="M5.5 10h3v4h-3z"/><path d="M12 13V6"/><path d="M10.5 7.5h3v4h-3z"/><path d="M17 16V8"/><path d="M15.5 9h3v5h-3z"/></svg></span>
-    <p class="weui-tabbar__label">光迅</p>
-  </button>
-  <button class="weui-tabbar__item" data-p="dash">
+  <button class="weui-tabbar__item weui-bar__item_on" data-p="dash">
     <span class="tbi"><svg class="weui-tabbar__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/></svg><span class="weui-badge weui-badge_dot" id="navDot"></span></span>
     <p class="weui-tabbar__label">ETF</p>
+  </button>
+  <button class="weui-tabbar__item" data-p="gx">
+    <span class="tbi"><svg class="weui-tabbar__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19h16"/><path d="M7 15V9"/><path d="M5.5 10h3v4h-3z"/><path d="M12 13V6"/><path d="M10.5 7.5h3v4h-3z"/><path d="M17 16V8"/><path d="M15.5 9h3v5h-3z"/></svg></span>
+    <p class="weui-tabbar__label">光迅</p>
   </button>
   <button class="weui-tabbar__item" data-p="res">
     <span class="tbi"><svg class="weui-tabbar__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 4.5h10.5a3 3 0 0 1 3 3V20H8a3 3 0 0 1-3-3z"/><path d="M5 17a3 3 0 0 1 3-3h10.5"/><path d="M9 8.5h6"/></svg></span>
@@ -3012,10 +3015,12 @@ function loadOne(it) {
         var qr = a[0], pdl = a[1] && a[1].length > 200 ? a[1] : null;
         var q = qr && qr.data ? qr.data : null;
         var P = ruleP();
-        var ser = pdl ? proxySer(daily, pdl, SW.buildSeries(pdl, bench, P)) : SW.buildSeries(daily, bench, P);
+        var pser = pdl ? SW.buildSeries(pdl, bench, P) : null;
+        var ser = pdl ? proxySer(daily, pdl, pser) : SW.buildSeries(daily, bench, P);
         var valid = ser.filter(function (s) { return s; });
         DATA[it.code] = {
           code: it.code, kind: it.kind, daily: daily, ser: ser, P: P, proxy: pdl ? px : "",
+          pdaily: pdl, pser: pser,   /* 代理的日线和信号：算这只的历史战绩用（自己的历史太短） */
           name: q ? q.f58 : (sn ? sn.name : it.code), nValid: valid.length,
           last: valid.length ? valid[valid.length - 1] : null,
           q: q ? { now: +q.f43, prev: +q.f60, pct: +q.f170, hi: +q.f44, lo: +q.f45, amp: +q.f171 }
@@ -3143,7 +3148,7 @@ function okCodes() {
 function etfCodes() { return okCodes().filter(function (c) { return covered(DATA[c]); }); }
 
 /* ===== 页面框架 ===== */
-var PAGE = "gx", DETAIL = null, pending = [];
+var PAGE = "dash", DETAIL = null, pending = [];   /* 2026-11-24 起打开就是 ETF 页（用户专注做 ETF 的 T） */
 function later(fn) { pending.push(fn); }
 function flushLater() { pending.forEach(function (f) { try { f(); } catch (e) { } }); pending = []; }
 function render() {
@@ -3378,12 +3383,37 @@ function ebsLevels(D) {
   return L;
 }
 /* ---------- ETF 页（2026-11-23 重排）：每只 ETF 一行状态 + B/S；规则依据、版本记录都移到「说明」页 ---------- */
-var EBS_NOTE = '<b>摸到概率</b>：70% 档大约 7 成的交易日盘中会碰到，50% 档一半。检验里预测 50%/70% → 实际 50%/69%。<br>' +
-  '<b>按它们每天做T 是亏的</b>（284 只 ETF、3 年、事先写好标准）：两边都挂 −25bp/次，只挂 B −13bp，只挂 S −34bp；' +
-  '你 1 万一笔、最低 5 元佣金，每次再少约 8bp。通信、科创50、卫星三组 2025、2026 年也都是负的。<br>' +
-  '<b>最亏的是冲到 S 卖老仓、等回落再接</b>：碰到 S 的日子，收盘平均比 S 还高 0.26%。反过来追涨（突破 S 买）扣掉追价后约等于 0。<br>' +
-  '<b>检验过赚钱的只有信号日</b>：开盘买、收盘卖老仓 +36bp/次；信号日也别等 B 再买（只有 42% 能成交）。' +
-  '每天都想动的话，最不亏的是开盘买、收盘卖老仓（扣你的成本约 −2bp，不显著）。';
+/* 2026-11-24 用户决定专注做 ETF 的 T：ETF 页放第一，每只显示自己的信号战绩，B/S 收起来 */
+var EBS_NOTE = '<b>只在信号日做</b>：收盘时 ETF 超卖（三因子分位 ≤10%）且上证下跌 → 下个交易日开盘多买一份，当天收盘卖同样数量的老仓。' +
+  '规则定死以后，在三批从没用过的 ETF 上检验都为正（155 只：胜率约 61%，每次 +0.40%）。' +
+  '上面每只的数字是它自己的历史，次数少，只作参考；通信、科创50 在定规则时用过，卫星ETF 没用过。<br>' +
+  '<b>平常日子不做</b>：按 B/S 每天高抛低吸，284 只 ETF、3 年都是亏的（两边都挂 −0.25%/次，冲到 S 卖老仓最亏）。B/S 只当参考位。<br>' +
+  '<b>信号日别等 B 再买</b>：只有 42% 能成交，成交的也比开盘买差（+0.18% 对 +0.36%）。';
+/* 这只 ETF 自己的信号战绩：冻结规则、有底仓（次日开盘买、收盘卖老仓），按「设置」里的成本扣费。
+   用同指数代理出信号的（589360 → 588000），在代理的日线上算——它自己上市太晚。 */
+function etfRecord(D) {
+  if (!D || !covered(D)) return null;
+  var dl = D.pdaily || D.daily, ser = D.pdaily ? D.pser : D.ser;
+  if (!dl || !ser || !MKT) return null;
+  if (dl.length && dl[dl.length - 1].d === bjDate() && preClose()) dl = dl.slice(0, -1);   /* 今天还没收盘，那一笔不算 */
+  var t = SW.backtest(ser, dl, ruleP(), S.F, "etf", { code: D.proxy || D.code, mkt: MKT });
+  function agg(a) {
+    var w = a.filter(function (x) { return x.net > 0; }), l = a.filter(function (x) { return x.net <= 0; });
+    function avg(b) { return b.length ? b.reduce(function (p, q) { return p + q.net; }, 0) / b.length : 0; }
+    return { n: a.length, win: a.length ? w.length / a.length * 100 : 0, aw: avg(w), al: avg(l), m: avg(a) };
+  }
+  var y = bjDate(), from = (+y.slice(0, 4) - 1) + y.slice(4), r = agg(t);
+  r.y = agg(t.filter(function (x) { return x.d >= from; })); r.from = t.length ? t[0].d : "";
+  return r;
+}
+function recLine(D) {
+  var r = etfRecord(D); if (!r) return "";
+  if (!r.n) return '<div class="ebrec">历史上还没触发过这条规则</div>';
+  return '<div class="ebrec">历史信号 ' + r.n + ' 次（' + esc(r.from.slice(0, 7)) + ' 起）：胜率 <b>' + fx(r.win, 0) + '%</b>' +
+    (r.y.n && r.y.n < r.n ? '（近一年 ' + fx(r.y.win, 0) + '%，' + r.y.n + ' 次）' : '') +
+    ' · 平均每次 <b class="' + cl(r.m) + '">' + sgn(r.m / 100, 2) + '%</b> · 赢 ' + sgn(r.aw / 100, 2) + '% / 输 ' + sgn(r.al / 100, 2) + '%' +
+    (D.proxy ? ' <span class="m">· 信号和战绩按同指数的 ' + esc(D.proxy) + '</span>' : '') + '</div>';
+}
 /* 一只 ETF 此刻该做什么：一个标签 + 一句话 */
 function etfStatus(D) {
   var st = stateOf(D);
@@ -3433,10 +3463,11 @@ function myEtfCard() {
     h += '<div class="ebs"><div class="ebsh" data-go="' + esc(it.code) + '"><span class="nm"><b>' + esc(D.name) + '</b> <span class="m">' + esc(it.code) +
       '</span></span><span class="r"><b class="' + cl(q.pct) + '">' + fx(px, 3) + '</b> ' +
       '<span class="' + cl(q.pct) + '">' + sgn(q.pct || 0, 2) + '%</span> <span class="m">›</span></span></div>' +
-      '<div class="ebst">' + s.pill + '<span>' + s.txt + (D.proxy ? ' <span class="m">· 信号按同指数的 ' + esc(D.proxy) + '</span>' : '') + '</span></div>' +
-      (L ? ebsBox(L) : '') + '</div>';
+      '<div class="ebst">' + s.pill + '<span>' + s.txt + '</span></div>' +
+      recLine(D) +
+      (L ? '<details class="fold"><summary>今天的 B/S 参考位<span class="m" style="font-size:12px">不是信号</span></summary>' + ebsBox(L) + '</details>' : '') + '</div>';
   });
-  h += '<details class="fold"><summary>B/S 怎么用 · 检验结果</summary><div class="sub" style="margin-top:0">' + EBS_NOTE + '</div></details>';
+  h += '<details class="fold"><summary>怎么做 · 为什么只在信号日做</summary><div class="sub" style="margin-top:0">' + EBS_NOTE + '</div></details>';
   return h + '</div>';
 }
 
@@ -3467,7 +3498,11 @@ function renderDash() {
     } else h += '<div class="sub" style="margin-top:0">规则冻结（' + FREEZE + '）后还没在你的 ETF 上触发过，触发并走完一笔后自动记在这里。</div>';
     h += '<div class="sub">规则定死以后的每一笔都记在这里，不能挑着看。累计 20 笔后均值仍为负，就该停用。</div></details>';
   }
+  /* 每分钟自动刷新时，已经展开的折叠保持展开 */
+  var openIdx = [];
+  Array.prototype.forEach.call(el.querySelectorAll("details"), function (x, i) { if (x.open) openIdx.push(i); });
   el.innerHTML = h;
+  Array.prototype.forEach.call(el.querySelectorAll("details"), function (x, i) { if (openIdx.indexOf(i) >= 0) x.open = true; });
   scBind();
 }
 function instCard(it) {
