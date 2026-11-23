@@ -1491,15 +1491,25 @@ function ivFrac(m) {
    档位 p：B/S 放在"摸到概率最接近 p"的常规价位上。历史检验（8~9 月 5 只个股 5 分钟K）：目标 50/60/70/80% 实际触及 49/59/69/79%；
    档位越高，两边都摸到越多（12/24/41/59%），但价差越小（0.99/0.75/0.54/0.34%），每笔盈亏都没变好（双边挂单约 −10bp）。
    滚动校准：近 20 个完整交易日 实际剩余幅度 ÷ 模型 的中位数，向 1 收缩 w=n/(n+300)。对光迅准确度改善约 0.5~1 个百分点，对其他个股没有改善。 */
-var RV_T = [0.5, 0.6, 0.7, 0.8];
+/* 2026-11-24 用户要"确定性高一点"：加 90%、95% 档（src/v11/gxtier.html，事先写定标准）。
+   摸到率是准的（90% 档实际 89~90%），但胜率越高、赢的越少，输的那天一样大——每个档位按两边挂单做T 都是负的。
+   TIER_EV = 光迅 2026（模型没见过的年份），研究口径扣费：两边都成交 %、胜率 %、赢的那天平均 %、输的那天平均 %、平均每天 bp；g = 20 只光模块股 2026 平均每天 bp 和 t */
+var RV_T = [0.5, 0.7, 0.8, 0.9, 0.95];
+var TIER_EV = {
+  0.5: { both: 13, win: 50, aw: 2.52, al: -2.93, m: -21.8, g: -22.2, gt: -1.4 },
+  0.7: { both: 39, win: 49, aw: 2.58, al: -3.32, m: -42.9, g: -37.1, gt: -2.7 },
+  0.8: { both: 58, win: 62, aw: 1.75, al: -3.75, m: -35.7, g: -37.1, gt: -3.2 },
+  0.9: { both: 78, win: 78, aw: 0.72, al: -4.37, m: -37.7, g: -42.5, gt: -5.6 },
+  0.95: { both: 89, win: 89, aw: 0.08, al: -4.82, m: -48.3, g: -50.9, gt: -11.3 }
+};
 function qAtP(q, p) { var t = (1 - p) * 100, i = Math.max(0, Math.min(99, Math.floor(t))), fr = t - i; return q[i] + (q[i + 1] - q[i]) * fr; }
 function lvTarget() { var p = +DKS.target; return RV_T.indexOf(p) >= 0 ? p : 0.5; }
-/* 从价位表里挑 B/S：概率最接近目标（±0.15 内）；没有就用模型价位 */
+/* 从价位表里挑 B/S：概率最接近目标（±0.15 内；85% 以上的档位只容 ±0.04，免得"95% 档"挑到 82% 的价位）；没有就用模型价位 */
 function lvPick(cand, p, fbS, fbB) {
-  var out = {};
+  var out = {}, tol = p >= 0.85 ? 0.04 : 0.15;
   ["S", "B"].forEach(function (sd) {
     var best = null;
-    cand.filter(function (c) { return c.side === sd && Math.abs(c.p - p) <= 0.15; })
+    cand.filter(function (c) { return c.side === sd && Math.abs(c.p - p) <= tol; })
       .forEach(function (c) { if (!best || Math.abs(c.p - p) < Math.abs(best.p - p)) best = c; });
     if (best) { out[sd] = best.px; out[sd + "name"] = best.k; out[sd + "p"] = best.p; best.pick = sd; }
     else { out[sd] = sd === "S" ? fbS : fbB; out[sd + "name"] = "模型位"; out[sd + "p"] = p; }
@@ -1676,8 +1686,8 @@ function lvCard(F) {
   var L = lvCompute(F);
   var h = '<div class="card"><h3>今日 B / S 点位<span class="r">按 14 个因子加权 · 盘中更新</span></h3>';
   var tg = lvTarget();
-  h += '<div class="seg lvseg">' + RV_T.map(function (p) {
-    return '<button data-tgt="' + p + '"' + (p === tg ? ' class="on"' : '') + '>摸到 ' + Math.round(p * 100) + '%</button>';
+  h += '<div class="sub" style="margin:0 0 4px">选今天摸到的概率：</div><div class="seg lvseg">' + RV_T.map(function (p) {
+    return '<button data-tgt="' + p + '"' + (p === tg ? ' class="on"' : '') + '>' + Math.round(p * 100) + '%</button>';
   }).join("") + '</div>';
   if (!L) return h + '<div class="sub">数据不足</div></div>';
   if (L.wait) return h + '<div class="box dim" style="margin-top:0"><b>9:15 集合竞价开始后出点位</b>点位以竞价价格为锚，竞价前没有锚。' +
@@ -1708,8 +1718,13 @@ function lvCard(F) {
   };
   var ancLab = R ? '现价' : '锚（' + (/预估/.test(L.src) ? '假设平开' : (/虚拟/.test(L.src) ? '竞价虚拟价' : '开盘')) + '）';
   if (pend) h += '<div class="sub wr">竞价还没结束，这是按虚拟价算的，9:25 撮合后会变。</div>';
-  h += '<div class="sub">这是"今天大概率摸到的位置"，<b>不是买卖信号</b>：按点位交易的回测都不赚钱，开盘直接买、收盘卖反而更好。' +
-    '档位越高越容易摸到，但价差越小。</div>';
+  var te = TIER_EV[tg];
+  if (te) h += '<div class="box' + (tg >= 0.9 ? ' warn' : '') + '"><b>' + Math.round(tg * 100) + '% 档按两边挂单做T，历史上（光迅 2026）</b>' +
+    '<em>胜率 ' + te.win + '%</em>：赢的那天平均 <span class="up">+' + fx(te.aw, 2) + '%</span>，输的那天平均 <span class="dn">' + fx(te.al, 2) + '%</span>，' +
+    '<em>平均每天 ' + sgn(te.m, 0) + 'bp</em>（20 只光模块股 ' + sgn(te.g, 0) + 'bp，t=' + fx(te.gt, 1) + '）。' +
+    (tg >= 0.9 ? '档位越高越容易做成，但赢一次只赚一点，没做成的那天价格往一边走、一次亏掉好几次的钱。' +
+      '加止损：亏损减半，但胜率也掉，整体还是负。光迅盘中更常见的是"一路走"——顺着突破做反而为正，只是胜率只有两成，也还没过检验线。'
+      : '这是"今天大概率摸到的位置"，不是买卖信号；开盘直接买、收盘卖反而更好（光迅 2026 +33bp）。') + '</div>';
   h += '<details class="fold"><summary>全部价位和摸到概率</summary><div class="tw"><table class="lvlad"><thead><tr><th>价位</th><th class="r">价格</th><th class="r">' + (R ? '距现价' : '距锚') + '</th><th class="r">' + (R ? '收盘前摸到' : '今天摸到') + '</th><th class="r">' + (L.today ? '触及时间' : '') + '</th></tr></thead><tbody>' +
     lad.slice(0, ai).map(lrow).join("") +
     '<tr class="lvanc"><td>' + esc(ancLab) + '</td><td class="r"><b>' + fx(refPx, 2) + '</b></td><td class="r">0</td><td></td><td></td></tr>' +
@@ -2792,6 +2807,39 @@ var HIS = { fails: 0, until: 0, stale: "" };
 function hisBlocked() { return Date.now() < HIS.until; }
 function hisFail() { HIS.fails++; if (HIS.fails >= 4) HIS.until = Date.now() + 10 * 60000; }
 function idbExpire(url) { return idbGet(url).then(function (c) { if (c) { c.exp = 1; idbPut(url, c); } }); }
+/* ===== 备用日K：腾讯行情（2026-11-24 加） =====
+   新加的标的（比如 563230）手机里没有存档，东财历史服务器又取不到时，整只就加载失败。
+   这时改从腾讯的公开日K取一次（前复权），换成和东财日K一样的格式存进手机；之后照常用报价补每天那根，不用再取。
+   只在「东财失败 且 没有够新的存档」时用；一个一个取，间隔 0.3 秒；同一只失败后 30 分钟内不重试。成交额、换手率腾讯没有，记 0（计算里用不到）。 */
+var TXF = {}, TXQ = Promise.resolve();
+function txSym(sid) {
+  var m = /^([01])\.(\d{6})$/.exec(sid || ""); if (!m) return "";
+  return m[1] === "1" ? "sh" + m[2] : ((/^(8|4|92)/.test(m[2]) ? "bj" : "sz") + m[2]);
+}
+function txDaily(url) {
+  var sid = (/secid=([^&]+)/.exec(url) || [])[1], lmt = +((/lmt=(\d+)/.exec(url) || [])[1]) || 800, sym = txSym(sid);
+  if (!sym || hisMode(url) !== "d") return Promise.reject(new Error("没有备用来源"));
+  if (TXF[url] && Date.now() - TXF[url] < 30 * 60000) return Promise.reject(new Error("备用来源刚失败过"));
+  var p = TXQ.then(function () {
+    return httpGet("https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=" + sym + ",day,,," + lmt + ",qfq");
+  }).then(function (j) {
+    var d = j && j.data && j.data[sym], k = d && (d.qfqday || d.day), nm = d && d.qt && d.qt[sym] ? d.qt[sym][1] : "";
+    if (!k || !k.length) throw new Error("备用来源也没有数据");
+    var out = [], pc = 0;
+    k.forEach(function (x) {
+      var o = +x[1], c = +x[2], h = +x[3], l = +x[4], v = +x[5];
+      if (!(c > 0) || !(o > 0)) return;
+      var chg = pc > 0 ? c - pc : 0;
+      out.push([x[0], o, c, h, l, v, 0, (pc > 0 ? (h - l) / pc * 100 : 0).toFixed(2), (pc > 0 ? chg / pc * 100 : 0).toFixed(2), chg.toFixed(3), 0].join(","));
+      pc = c;
+    });
+    if (!out.length) throw new Error("备用来源也没有数据");
+    delete TXF[url];
+    return { name: nm, klines: out };
+  });
+  TXQ = p.then(function () { return sleep(300); }, function () { TXF[url] = Date.now(); return sleep(300); });
+  return p;
+}
 /* 返回 {data, _at: 这份数据是什么时候取的, _stale: 取不到、用的旧存档的日期} */
 function histGet(url) {
   if (NET_OFF) return ncGet(url);
@@ -2799,7 +2847,15 @@ function histGet(url) {
     var at = c ? (c.at || bjDayMinMs(c.day, c.min)) : 0;
     if (c && !c.exp && hisFresh(url, at, c.r)) return { data: c.r.data, _at: at };
     function old() { HIS.stale = c.day; return { data: c.r.data, _at: at, _stale: c.day }; }
-    if (hisBlocked()) { if (c) return old(); throw new Error("东财历史数据暂时限流"); }
+    /* 东财取不到：A 股日K 先试腾讯备用，再退回旧存档 */
+    function backup(e) {
+      return txDaily(url).then(function (raw) {
+        var t = Date.now(), dt = hisStrip(url, raw);
+        idbPut(url, { day: bjDate(), min: bjMin(), at: t, r: { data: dt }, src: "tx" });
+        return { data: dt, _at: t };
+      }, function () { if (c) return old(); throw e; });
+    }
+    if (hisBlocked()) return backup(new Error("东财历史数据暂时限流"));
     return hisRun(function () { return hisBlocked() ? Promise.reject(new Error("东财历史数据暂时限流")) : httpGet(url); }).then(function (r) {
       HIS.fails = 0;
       if (r && r.data && r.data.klines && r.data.klines.length) {
@@ -2807,12 +2863,10 @@ function histGet(url) {
         idbPut(url, { day: bjDate(), min: bjMin(), at: t, r: { data: dt } });
         return { data: dt, _at: t };
       }
-      if (c) return old();
-      return r;
+      return backup(new Error("东财没有返回这只的数据"));
     }, function (e) {
       if (!hisBlocked()) hisFail();
-      if (c) return old();
-      throw hisBlocked() ? new Error("东财历史数据暂时限流") : e;
+      return backup(hisBlocked() ? new Error("东财历史数据暂时限流") : e);
     });
   });
 }
@@ -3693,6 +3747,8 @@ function renderRes() {
     '原因是盘中涨起来的往往收得更高、跌下去的往往收得更低。</div></div>';
   h += '<div class="card"><h3>试过、不管用的<span class="r">都按事先写好的标准检验</span></h3><div class="weui-cells" style="margin-top:0">' +
     row('每天按 B/S 高抛低吸（ETF、个股）', '<span class="pill bad">亏</span>') +
+    row('光迅 90~95% 高胜率档位、再加止损', '<span class="pill bad">亏</span>') +
+    row('光迅顺势（涨破 S 买、跌破 B 卖）', '<span class="pill warn">为正但没过线</span>') +
     row('倒T（先卖后买）', '<span class="pill bad">三种做法都亏</span>') +
     row('个股短线信号（含光迅，566 个候选）', '<span class="pill dim">0 个通过</span>') +
     row('竞价、外盘、期指、资金、技术指标判断方向', '<span class="pill dim">244 个 0 通过</span>') +
@@ -3702,7 +3758,9 @@ function renderRes() {
     '</div><div class="sub">最硬的一条事实：A 股隔夜段扣成本后是负的，大跌日收盘去抄底，四次里有三次第二天开得更低——所以规则都是"次日开盘"进。</div></div>';
   h += '<details class="cfold"><summary><span class="t">光迅：这些因子检验过了吗</span><span class="r">3 年</span></summary>' + dkEvidence() + '</details>';
   h += '<details class="cfold"><summary><span class="t">完整研究记录</span><span class="r">v1 ~ v10</span></summary>' +
-    '<div class="sub" style="margin-top:0">11-23 v10：ETF 每天按 B/S 做T，7 个候选 0 通过（双边 −25bp t=−8.4）；追涨扣掉追价约 0。' +
+    '<div class="sub" style="margin-top:0">11-24 v11/v12：光迅 90/95% 档胜率 78~89%，但每天 −0.4~−0.5%；加止损亏损减半、胜率也掉，还是负（5 分钟回放核对过）。' +
+    '顺势（涨破 S 买、跌破 B 卖）光模块组 2026 +0.29%/天（t=3.6），但胜率只有 21%，2023~25 年 t=2.9 没到事先定的 3，16 个候选 0 通过。<br>' +
+    '11-23 v10：ETF 每天按 B/S 做T，7 个候选 0 通过（双边 −25bp t=−8.4）；追涨扣掉追价约 0。' +
     '11-23 v9：放宽 ETF 触发 5 个变体 0 通过；光迅 B/S 只有 4 个因子有用。下面是更早的记录。</div>' + resHistory() + '</details>';
   h += '<div class="card"><h3>工具</h3><div class="cellbtns" style="padding:0"><button class="btn g sm" id="goBt">回测（你的 ETF）</button>' +
     '<button class="btn g sm" id="goInst">全部标的</button></div></div>';
