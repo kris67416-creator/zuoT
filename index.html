@@ -1649,6 +1649,14 @@ function lvCompute(F) {
   var tgt = lvTarget();
   var pkPlan = lvPick(cand, tgt, anchor * (1 + qAtP(LVQ.up, tgt) * mU * atr / 100), anchor * (1 - qAtP(LVQ.dn, tgt) * mD * atr / 100));
   ["S", "B"].forEach(function (sd) { out[sd] = pkPlan[sd]; out[sd + "name"] = pkPlan[sd + "name"]; out[sd + "p"] = pkPlan[sd + "p"]; });
+  /* 涨跌停（2026-11-24，src/v13）：11-24 竞价 89.00 离涨停 90.86 只剩 2.1%，50% 档的 S 却算在 91.96。
+     点位不能超出涨跌停价：超出的改用涨跌停价，并记下原来算到哪；超出涨跌停的常规价位标成摸不到。 */
+  var lmt = /^(30|68)/.test(GX_CODE) ? 0.2 : 0.1;
+  out.limUp = Math.round(pc * (1 + lmt) * 100 + 1e-6) / 100; out.limDn = Math.round(pc * (1 - lmt) * 100 + 1e-6) / 100;
+  out.roomUp = (out.limUp / anchor - 1) * 100; out.roomDn = (1 - out.limDn / anchor) * 100;
+  cand.forEach(function (c) { if (c.px > out.limUp + 1e-6 || c.px < out.limDn - 1e-6) c.beyond = true; });
+  if (out.S > out.limUp + 1e-6) { out.Scap = out.S; out.S = out.limUp; out.Sname = "涨停价"; out.Sp = lvSurv(LVQ.up, out.roomUp / atr / mU); }
+  if (out.B < out.limDn - 1e-6) { out.Bcap = out.B; out.B = out.limDn; out.Bname = "跌停价"; out.Bp = lvSurv(LVQ.dn, out.roomDn / atr / mD); }
   out.tgt = tgt;
   out.sPct = (out.S / anchor - 1) * 100; out.bPct = (1 - out.B / anchor) * 100;
   out.contrib = LV.feats.map(function (k, i) {
@@ -1677,6 +1685,8 @@ function lvCompute(F) {
       lv2["今开"] = anchor; if (+F.q.f71 > 0) lv2["均价"] = +F.q.f71;
       if (hiT > 0 && isFinite(hiT)) lv2["今日高"] = hiT; if (loT < 1e17) lv2["今日低"] = loT;
       var rt = lvRtPick(px, sU, sD, lv2, tgt), rc = rt.cand;
+      if (rt.S > out.limUp + 1e-6) { rt.S = out.limUp; rt.Sname = "涨停价"; }
+      if (rt.B < out.limDn - 1e-6) { rt.B = out.limDn; rt.Bname = "跌停价"; }
       rows.forEach(function (r) { rc.forEach(function (c) { if (!c.intra && !c.t && (c.side === "S" ? r.h >= c.px + tick : r.l <= c.px - tick)) c.t = r.hm; }); });
       rt.px = px; rt.f = f; rt.kap = kap; rt.tgt = tgt;
       rt.upPct = qAtP(IV.qU, 0.5) * sU * 100; rt.dnPct = qAtP(IV.qD, 0.5) * sD * 100;
@@ -1717,10 +1727,22 @@ function lvCard(F) {
   var lrow = function (c) {
     return '<tr' + (c.pick ? ' class="lvpick"' : '') + '><td>' + esc(c.k) + (c.pick ? ' <b class="' + (c.pick === "S" ? "up" : "dn") + '">' + c.pick + '</b>' : '') + '</td><td class="r">' + fx(c.px, 2) +
       '</td><td class="r ' + (c.side === "S" ? "up" : "dn") + '">' + sgn((c.px / refPx - 1) * 100, 1) + '%</td><td class="r">' + fx(c.p * 100, 0) + '%</td><td class="r">' +
-      (c.t ? '<span class="wr">' + esc(c.t) + '</span>' : (L.today && !c.intra ? '<span class="m">—</span>' : '')) + '</td></tr>';
+      (c.beyond ? '<span class="m">超出涨跌停</span>' : (c.t ? '<span class="wr">' + esc(c.t) + '</span>' : (L.today && !c.intra ? '<span class="m">—</span>' : ''))) + '</td></tr>';
   };
   var ancLab = R ? '现价' : '锚（' + (/预估/.test(L.src) ? '假设平开' : (/虚拟/.test(L.src) ? '竞价虚拟价' : '开盘')) + '）';
   if (pend) h += '<div class="sub wr">竞价还没结束，这是按虚拟价算的，9:25 撮合后会变。</div>';
+  if (isFinite(L.limUp)) {
+    h += '<div class="sub">涨停 ' + fx(L.limUp, 2) + '（+' + fx(L.roomUp, 1) + '%）· 跌停 ' + fx(L.limDn, 2) + '（−' + fx(L.roomDn, 1) + '%）' +
+      (L.Scap ? ' · <span class="wr">S 本来算在 ' + fx(L.Scap, 2) + '，在涨停价以上、摸不到，改用涨停价</span>' : '') +
+      (L.Bcap ? ' · <span class="wr">B 本来在跌停价以下，改用跌停价</span>' : '') + '</div>';
+    var gapNow = L.today && F.prevC > 0 ? (L.anchor / F.prevC - 1) * 100 : 0;
+    if (L.roomUp < L.atr || L.roomDn < L.atr || gapNow >= 5) {
+      h += '<div class="box warn"><b>' + (L.roomUp < L.atr ? '离涨停只剩 ' + fx(L.roomUp, 1) + '%' : (L.roomDn < L.atr ? '离跌停只剩 ' + fx(L.roomDn, 1) + '%' : '高开 ' + fx(gapNow, 1) + '%')) + '</b>' +
+        (L.roomUp < L.atr ? '上方空间被涨停截断，S 的"摸到概率"偏高，不可信。' : '') +
+        (L.roomDn < L.atr ? '下方空间被跌停截断；一旦封跌停，老仓卖不出去，T 平不掉。' : '') +
+        (gapNow >= 5 ? '高开 ≥5% 的日子开盘买正T，三组历史样本都是负的（光模块组 −0.6%/次；离涨停不到 3% 的高开平均 −1.9%/次，胜率四成）——今天别做正T。' : '') + '</div>';
+    }
+  }
   var te = TIER_EV[tg];
   if (te) h += '<div class="box' + (tg >= 0.9 ? ' warn' : '') + '"><b>' + Math.round(tg * 100) + '% 档按两边挂单做T，历史上（光迅 2026）</b>' +
     '<em>胜率 ' + te.win + '%</em>：赢的那天平均 <span class="up">+' + fx(te.aw, 2) + '%</span>，输的那天平均 <span class="dn">' + fx(te.al, 2) + '%</span>，' +
@@ -1845,18 +1867,17 @@ function dkLedger() {
     bp: bps.length ? bps.reduce(function (a, b) { return a + b; }, 0) / bps.length : 0,
     open: DKS.log.filter(function (e) { return !(e.p2 > 0); }), mech: mn ? mech / mn : NaN, mn: mn };
 }
-/* 冻结日之后，机械正T（开盘买、收盘卖）在光迅上的前向记分 */
+/* 前向记分：从 R2_FROM（11-25）起，每个交易日按 R2 自动记一笔（看行情做T，见 dkPlan 上面的说明） */
 function dkForward() {
-  if (!DK.H) return null;
+  if (!DK.H || typeof r2Day !== "function") return null;
   var today = bjDate(), ph = dkPhase(), d = DK.H.gx, out = [];
-  for (var i = 1; i < d.length; i++) {
-    var x = d[i]; if (x.d <= DESK_FREEZE) continue;
+  for (var i = 61; i < d.length; i++) {
+    var x = d[i]; if (x.d < R2_FROM) continue;
     if (x.d === today && ph !== "after") continue;
-    if ((x.o / d[i - 1].c - 1) * 100 >= 9.7) continue;
-    out.push({ d: x.d, bp: (x.c / x.o - 1) * 1e4 - SW.costOf(x.o, "stock", S.F).total });
+    var r = r2Day(d, i); if (r) out.push(r);
   }
-  var s = out.reduce(function (a, b) { return a + b.bp; }, 0);
-  return { n: out.length, mean: out.length ? s / out.length : 0, sum: s, rows: out };
+  var s = out.reduce(function (a, b) { return a + b.bp; }, 0), w = out.filter(function (r) { return r.bp > 0; }).length;
+  return { n: out.length, mean: out.length ? s / out.length : 0, sum: s, win: out.length ? w / out.length * 100 : 0, rows: out };
 }
 
 /* ---------- 渲染 ---------- */
@@ -1908,32 +1929,146 @@ function dkSpark(F) {
     '<span class="axl" style="left:0;top:0">' + fx(hi, 2) + '</span><span class="axl" style="left:0;bottom:0">' + fx(lo, 2) + '</span>' +
     '<span class="axl" style="right:0;bottom:0">' + esc(last.hm) + ' ' + fx(last.c, 2) + '</span></div></div>';
 }
+/* ---------- 看行情做T（R2，2026-11-25，src/v16）----------
+   前一日收盘在 60 日线上方 = 上涨段 → 正T（开盘买、收盘卖老仓），高开 ≥5% 不做；
+   下方 = 下跌段 → 倒T（开盘卖老仓，涨到 开盘×1.02 就买回，否则收盘买回）。
+   检验 0 通过：光模块组为正（光迅 2026 +80bp/天，t=2.8），随机个股为负（−10bp，t=−3.0）——像是光模块板块特有，
+   按实验处理：从 11-25 起前向记分，20 次后平均为负就停。 */
+var R2_FROM = "2026-11-25";
+function r2Regime(bars) {   /* bars = 截至前一交易日的日线 */
+  var n = bars ? bars.length : 0; if (n < 60) return null;
+  var s = 0; for (var i = n - 60; i < n; i++) s += bars[i].c;
+  var ma = s / 60, pc = bars[n - 1].c;
+  return { up: pc > ma, ma60: ma, pc: pc, dist: (pc / ma - 1) * 100 };
+}
+function r2Stop(o) { return Math.ceil(o * 1.02 * 100 - 1e-6) / 100; }
+/* 判断行情用的日线：F.bars 只有最近 25 根（算常规价位用），不够 60 日线，所以从完整日线里截到计划日的前一天 */
+function r2Bars(F) {
+  var g = DK.H && DK.H.gx ? DK.H.gx : [], td = bjDate();
+  if (F && F.isToday) return g.filter(function (x) { return x.d < td; });
+  var lastD = F && F.last ? F.last.d : td;
+  return g.filter(function (x) { return x.d <= lastD; });
+}
+function r2Lim(pc) { var lm = /^(30|68)/.test(GX_CODE) ? 0.2 : 0.1; return { up: Math.round(pc * (1 + lm) * 100 + 1e-6) / 100, dn: Math.round(pc * (1 - lm) * 100 + 1e-6) / 100 }; }
+/* 某一天按 R2 的结果（bp，按「设置」里的成本扣费）；null = 规则这天不做 */
+function r2Day(bars, i) {
+  var x = bars[i], pv = bars[i - 1]; if (!x || !pv || !(x.o > 0) || !(pv.c > 0)) return null;
+  var rg = r2Regime(bars.slice(0, i)); if (!rg) return null;
+  var lm = r2Lim(pv.c); if (x.o >= lm.up - 0.001 || x.o <= lm.dn + 0.001) return null;
+  var nx = bars[i + 1], cst = SW.costOf(x.o, "stock", S.F).total, g, side = rg.up ? "B" : "S", st = NaN, hit = false;
+  if (rg.up) {
+    if (x.o >= pv.c * 1.05) return null;
+    g = (((x.c <= lm.dn + 0.001 && nx && nx.o > 0) ? nx.o : x.c) / x.o - 1) * 1e4;
+  } else {
+    st = r2Stop(x.o); hit = x.h >= st;
+    g = hit ? (1 - Math.min(st + 0.01, lm.up) / x.o) * 1e4 : (1 - ((x.c >= lm.up - 0.001 && nx && nx.o > 0) ? nx.o : x.c) / x.o) * 1e4;
+  }
+  return { d: x.d, side: side, bp: g - cst, stop: st, hit: hit };
+}
 function dkPlan(F) {
   var ph = F.ph, sh = +DKS.pos.sh || 0, lot = sh > 0 ? Math.floor(sh / Math.max(1, DKS.frac) / 100) * 100 : 0;
-  var limOpen = F.isToday && F.gapPx > 0 && F.gapPx >= F.prevC * 1.097;
+  var rg = r2Regime(r2Bars(F)), down = !!(rg && !rg.up);
+  var lm = r2Lim(F.prevC), open = F.isToday && F.gapPx > 0 ? F.gapPx : NaN;
+  var limOpen = isFinite(open) && open >= lm.up - 0.001, dnOpen = isFinite(open) && open <= lm.dn + 0.001;
+  var bigGap = !down && isFinite(open) && !limOpen && open >= F.prevC * 1.05;
+  var noTrade = limOpen || dnOpen || bigGap;
+  var stop = down && isFinite(open) ? r2Stop(open) : NaN;
+  var hiT = -1; (F.today || []).forEach(function (r) { if (r.h > hiT) hiT = r.h; });
+  if (F.q && +F.q.f44 > hiT) hiT = +F.q.f44;
+  var stopHit = down && isFinite(stop) && hiT >= stop;
+  var nowPx = F.q && +F.q.f43 > 0 ? +F.q.f43 : NaN;
+  var sealDn = F.isToday && isFinite(nowPx) && nowPx <= lm.dn + 0.001, sealUp = F.isToday && isFinite(nowPx) && nowPx >= lm.up - 0.001;
   var led = dkLedger(), openB = led.open.filter(function (e) { return e.d === bjDate(); });
-  var head, cls = "", icon = "◆", body = "";
-  if (ph === "closed") { head = "休市 · 下个交易日的准备"; icon = "—"; }
-  else if (ph === "pre") { head = "盘前 · 9:15 开始竞价"; icon = "◷"; }
+  var side = down ? "倒T" : "正T", head, cls = "", icon = "◆", body = "";
+  if (ph === "closed") { head = "休市 · 下个交易日按" + side; icon = "—"; }
+  else if (ph === "pre") { head = "盘前 · 今天按" + side + "，9:15 开始竞价"; icon = "◷"; }
   else if (ph === "auc1") { head = "集合竞价中 · 9:20 前的价格可以撤单，不算数"; icon = "◷"; }
-  else if (ph === "auc2") { head = limOpen ? "竞价涨停 · 今天不做" : "竞价结束 · 9:30 后可以买 T 仓"; cls = limOpen ? " block" : " buy"; }
-  else if (ph === "open") {
-    if (openB.length) { head = "T 仓持有中 · 14:50 后卖出同样数量的底仓"; cls = " sell"; }
-    else head = limOpen ? "涨停开盘 · 今天不做" : "盘中 · 如果做，就是正T";
-  } else if (ph === "close") { head = openB.length ? "现在卖出 " + openB.reduce(function (a, e) { return a + e.sh; }, 0) + " 股底仓" : "收盘前"; cls = openB.length ? " sell" : ""; }
-  else head = "已收盘 · 记一下今天做了什么";
-  body += '<b>只做正T</b>（先买后卖）。倒T 光迅三年 −38bp/次、每年都亏；因子挑不出方向（' + GXE.nCand + ' 个候选 0 个通过）。<br>';
-  body += '<b>怎么做：</b>9:30–9:35 买 T 仓，<em>14:50–14:57 卖同样数量的底仓</em>，中途不止盈。<br>';
-  body += '<b>做多少：</b>T 仓不超过底仓的 1/' + DKS.frac + (lot ? '（你填的底仓 ' + sh + ' 股 → 每次最多 <em>' + lot + ' 股</em>）' : '（在下面「记账」里填底仓股数，这里会算出股数）') + '。<br>';
-  body += '<b>不做：</b>开盘涨停；公告里有减持、立案、业绩预减。<br>';
-  body += '<span class="m">别指望太多：正T 光迅三年 +21.6bp/次（t=1.66，不显著），近两个月 −187bp/次。不做T 的期望是 0。</span>';
-  if (openB.length && F.q && +F.q.f43 > 0) {
-    var e = openB[0], fake = { dir: e.dir, p1: e.p1, p2: +F.q.f43, sh: e.sh }, r = dkPnl(fake);
-    body += '<br><b>今天这笔：</b>' + (e.dir === "B" ? "买入" : "卖出") + ' ' + e.sh + ' 股 @ ' + fx(e.p1, 2) + '，按现价 ' + fx(+F.q.f43, 2) +
+  else if (ph === "auc2") {
+    if (noTrade) { head = limOpen ? "竞价涨停 · 今天不做" : (dnOpen ? "竞价跌停 · 今天不做" : "高开 ≥5% · 今天不做正T"); cls = " block"; }
+    else { head = down ? "竞价结束 · 9:30 后卖 T 仓，止损买回价 " + fx(stop, 2) : "竞价结束 · 9:30 后买 T 仓"; cls = down ? " sell" : " buy"; }
+  } else if (ph === "open" || ph === "close") {
+    if (noTrade) { head = limOpen ? "涨停开盘 · 今天不做" : (dnOpen ? "跌停开盘 · 今天不做" : "高开 ≥5% · 今天不做正T"); cls = " block"; }
+    else if (down) {
+      if (stopHit) { head = "已涨到止损价 " + fx(stop, 2) + " · 卖出的那份应已买回"; cls = " block"; }
+      else if (ph === "close") { head = sealUp ? "封涨停 · 买不回，明天开盘再买" : "现在买回早上卖出的那份"; cls = " sell"; }
+      else { head = "倒T 中 · 涨到 " + fx(stop, 2) + " 就买回，否则 14:50 后买回"; cls = " sell"; }
+    } else {
+      if (ph === "close") { head = sealDn ? "封跌停 · 底仓卖不出，明天开盘再卖" : "现在卖出早上多买的同样数量"; cls = " sell"; }
+      else { head = sealDn ? "封跌停 · 底仓卖不出，今天的 T 平不掉" : "正T 中 · 14:50 后卖出同样数量的老仓"; cls = " buy"; }
+    }
+  } else head = "已收盘 · 记一下今天做了什么";
+  body += '<b>行情：</b>' + (rg ? '前一日收盘 ' + fx(rg.pc, 2) + '，60 日线 ' + fx(rg.ma60, 2) + '（' + sgn(rg.dist, 1) + '%）→ <em>' + (down ? '下跌段 · 倒T' : '上涨段 · 正T') + '</em>' : '日线不够 60 天，判断不了') + '<br>';
+  if (down) body += '<b>怎么做：</b>9:30–9:35 卖出 T 仓（老仓），同时挂条件单「涨到 ' + (isFinite(stop) ? '<em>' + fx(stop, 2) + '</em>' : '开盘价×1.02') +
+    ' 买回」；没触发就 14:50–14:57 买回同样数量。<br>';
+  else body += '<b>怎么做：</b>9:30–9:35 买 T 仓，<em>14:50–14:57 卖同样数量的老仓</em>。高开 ≥5% 不做。<br>';
+  body += '<b>做多少：</b>不超过底仓的 1/' + DKS.frac + (lot ? '（你填的底仓 ' + sh + ' 股 → 每次最多 <em>' + lot + ' 股</em>）' : '（在下面「记账」里填底仓股数，这里会算出股数）') + '。<br>';
+  body += '<b>不做：</b>开盘涨停或跌停' + (down ? '' : '；高开 ≥5%') + '；公告里有减持、立案、业绩预减。' +
+    (down ? '收盘封涨停时买不回，只能第二天开盘买。' : '收盘封跌停时老仓卖不出，只能第二天开盘卖。') + '<br>';
+  body += '<span class="m">这是实验，不是验证过的规则：光模块组上为正（光迅 2026 每天 +0.80%，t=2.8，胜率 51%，赢 +4.1% / 输 −2.6%），' +
+    '随机个股上为负（−0.10%，t=−3.0），没过事先定的标准。下面「前向记分」从 11-25 起记每一笔，20 次后平均为负就停。</span>';
+  if (openB.length && isFinite(nowPx)) {
+    var e = openB[0], fake = { dir: e.dir, p1: e.p1, p2: nowPx, sh: e.sh }, r = dkPnl(fake);
+    body += '<br><b>今天这笔：</b>' + (e.dir === "B" ? "买入" : "卖出") + ' ' + e.sh + ' 股 @ ' + fx(e.p1, 2) + '，按现价 ' + fx(nowPx, 2) +
       ' 平掉是 <em class="' + cl(r.y) + '">' + sgn(r.y, 0) + ' 元（' + sgn(r.bp, 0) + 'bp）</em>，已扣费。';
   }
   return '<div class="action' + cls + '"><div class="ai">' + icon + '</div><div style="flex:1;min-width:0">' +
     '<div class="ah">' + esc(head) + '</div><div class="ab">' + body + '</div></div></div>';
+}
+/* ---------- 今日复盘（2026-11-24 加）----------
+   收盘后把今天 9:26 的开盘计划按当时的数据重算一遍（每个档位），再用全天分钟线看摸到没有、按两边挂单做T 结果如何。
+   重算时临时把页面时钟拨到 9:26（只读，不改任何存储）。一天只算一次。 */
+function dkTodayReview() {
+  var F0 = deskCompute(), td = bjDate();
+  if (!F0 || !F0.today || F0.today.length < 30 || F0.chartDay !== td) return null;
+  if (DK.TRd === td && DK.TR) return DK.TR;
+  var orig = bjNow, keep = DKS.target, F = null, tiers = [];
+  try {
+    bjNow = function () { var d = orig(); d.setHours(9, 26, 0, 0); return d; };
+    F = deskCompute();
+    if (F && F.isToday && F.gapPx > 0) RV_T.forEach(function (p) {
+      DKS.target = p; var L = lvCompute(F);
+      if (L && !L.wait) tiers.push({ p: p, B: L.B, S: L.S, Bn: L.Bname, Sn: L.Sname, limUp: L.limUp, limDn: L.limDn });
+    });
+  } catch (e) { tiers = []; } finally { bjNow = orig; DKS.target = keep; }
+  if (!F || !tiers.length) return null;
+  var rows = F0.today, open = F.gapPx, pc = F.prevC, close = rows[rows.length - 1].c;
+  var day = DK.H && DK.H.gx ? DK.H.gx[DK.H.gx.length - 1] : null;
+  if (day && day.d === td && day.c > 0) close = day.c;
+  var hi = -1e9, lo = 1e9; rows.forEach(function (r) { hi = Math.max(hi, r.h || r.c); lo = Math.min(lo, r.l || r.c); });
+  var p1450 = rows.filter(function (r) { return r.hm <= "14:50"; }).pop();
+  tiers.forEach(function (t) {
+    rows.forEach(function (r) {
+      if (!t.tS && (r.h || r.c) >= t.S + 0.01) t.tS = r.hm;
+      if (!t.tB && (r.l || r.c) <= t.B - 0.01) t.tB = r.hm;
+    });
+    t.res = t.tS && t.tB ? (t.S / t.B - 1) * 100 : (t.tB ? (close / t.B - 1) * 100 : (t.tS ? (1 - close / t.S) * 100 : null));
+  });
+  DK.TR = { open: open, pc: pc, hi: hi, lo: lo, close: close, gap: (open / pc - 1) * 100, o2c: (close / open - 1) * 100,
+    limUp: tiers[0].limUp, limDn: tiers[0].limDn, zt: p1450 ? (p1450.c / open - 1) * 100 : null, tiers: tiers };
+  DK.TRd = td;
+  return DK.TR;
+}
+function dkTodayCard() {
+  var R = null; try { R = dkTodayReview(); } catch (e) { R = null; }
+  if (!R) return "";
+  var h = '<div class="card"><h3>今日复盘<span class="r">' + esc(bjDate().slice(5)) + ' · 对照 9:25 的计划</span></h3>';
+  h += '<div class="sub" style="margin-top:0">开 <b>' + fx(R.open, 2) + '</b>（' + (R.gap >= 0 ? '高开 ' : '低开 ') + sgn(R.gap, 2) + '%' +
+    (R.gap > 0 ? '，离涨停 ' + fx((R.limUp / R.open - 1) * 100, 1) + '%' : '') + '）· 高 ' + fx(R.hi, 2) + ' · 低 ' + fx(R.lo, 2) +
+    ' · 收 <b>' + fx(R.close, 2) + '</b> · 开→收 <b class="' + cl(R.o2c) + '">' + sgn(R.o2c, 1) + '%</b></div>';
+  h += '<div class="tw"><table class="lvlad"><thead><tr><th>档位</th><th class="r">B</th><th class="r">S</th><th>摸到</th><th class="r">两边挂单</th></tr></thead><tbody>' +
+    R.tiers.map(function (t) {
+      var hit = t.tS && t.tB ? '两边都到' : (t.tB ? '只到 B ' + t.tB : (t.tS ? '只到 S ' + t.tS : '都没到'));
+      return '<tr><td>' + Math.round(t.p * 100) + '%</td><td class="r dn">' + fx(t.B, 2) + '</td><td class="r up">' + fx(t.S, 2) +
+        (t.Sn === "涨停价" ? '<div class="m" style="font-size:10.5px">涨停价</div>' : '') + '</td><td style="font-size:12px">' + hit + '</td>' +
+        '<td class="r ' + cl(t.res) + '">' + (t.res == null ? '—' : sgn(t.res, 1) + '%') + '</td></tr>';
+    }).join("") + '</tbody></table></div>';
+  var gxb = DK.H && DK.H.gx, r2t = gxb && gxb.length && gxb[gxb.length - 1].d === bjDate() ? r2Day(gxb, gxb.length - 1) : null;
+  h += '<div class="sub" style="margin-top:8px"><b>按「看行情做T」：</b>' + (r2t ? (r2t.side === "S" ? '下跌段 → 倒T' + (r2t.hit ? '，涨到 ' + fx(r2t.stop, 2) + ' 止损买回' : '，收盘买回') : '上涨段 → 正T') +
+    '，今天 <b class="' + cl(r2t.bp) + '">' + sgn(r2t.bp / 100, 2) + '%</b>（已扣费）' : '今天规则不做（开盘涨跌停或高开 ≥5%）') + '</div>';
+  if (R.zt != null) h += '<div class="sub">正T（开盘买、14:50 卖底仓）：<b class="' + cl(R.zt) + '">' + sgn(R.zt, 1) + '%</b>（未扣费）。' +
+    (R.gap >= 5 ? '高开 ≥5% 的日子正T 历史上多半亏（三组样本都为负，离涨停近的平均 −1.9%），今天是典型的高开低走。' :
+      (R.gap <= -5 ? '大幅低开的日子正T 历史上没有稳定的方向。' : '')) + '</div>';
+  return h + '</div>';
 }
 function renderDesk(force) {
   var el = $("p-gx"); if (!el) return;
@@ -1977,6 +2112,7 @@ function dkRender(el) {
     '<div class="hrow"><span class="hk">时段</span><span class="hv"><span class="pill ' + (ph === "open" || ph === "close" || ph === "auc1" || ph === "auc2" ? "good" : "dim") + '">' + DK_PH[ph] + '</span> ' +
     (F.isToday ? '<span class="m" style="font-weight:400">按今天这一交易日' + (DK_FAST_LAST && !NC_USED && (ph === "auc1" || ph === "auc2" || ph === "open" || ph === "close") ? ' · 现价 ' + esc(DK_FAST_LAST) + ' 更新（10 秒一次）' : '') + '</span>'
       : '<span class="m" style="font-weight:400">为下一个交易日准备 · 数据截至 ' + esc(F.P) + '</span>') + '</span></div></div>';
+  if (ph === "after") h += dkTodayCard();
   h += lvCard(F);
   h += dkPlan(F);
   h += dkSpark(F);
@@ -2117,13 +2253,14 @@ function dkEvidence() {
 }
 function dkForwardHTML() {
   var fw = dkForward();
-  var h = '<details class="cfold"><summary><span class="t">前向记分 · 机械正T</span><span class="r">' +
-    (fw && fw.n ? fw.n + ' 次 · 平均 ' + sgn(fw.mean, 0) + 'bp' : DESK_FREEZE + ' 起') + '</span></summary>';
+  var h = '<details class="cfold"' + (fw && fw.n ? ' open' : '') + '><summary><span class="t">前向记分 · 看行情做T</span><span class="r">' +
+    (fw && fw.n ? fw.n + ' 次 · 平均 ' + sgn(fw.mean / 100, 2) + '%' : R2_FROM.slice(5) + ' 起') + '</span></summary>';
   if (fw && fw.n) {
-    h += '<div class="kpis">' + kpi("次数", fw.n, "") + kpi("每次净收益", sgn(fw.mean, 0), "bp", cl(fw.mean)) + kpi("累计", sgn(fw.sum, 0), "bp", cl(fw.sum)) + '</div>' +
-      '<div class="sub">' + fw.rows.slice(-8).map(function (r) { return esc(r.d.slice(5)) + ' <span class="' + cl(r.bp) + '">' + sgn(r.bp, 0) + '</span>'; }).join(' · ') + '</div>';
-  } else h += '<div class="sub" style="margin-top:0">从冻结日起，每个交易日收盘后自动记一笔"开盘买、收盘卖"的结果。</div>';
-  h += '<div class="sub"><b>停用线：</b>累计 20 次后均值仍为负，连正T 也别做了——说明光迅这段时间的日内方向已经反过来。</div></details>';
+    h += '<div class="kpis">' + kpi("次数", fw.n, "胜率 " + fx(fw.win, 0) + "%") + kpi("平均每次", sgn(fw.mean / 100, 2), "%", cl(fw.mean)) +
+      kpi("累计", sgn(fw.sum / 100, 1), "%", cl(fw.sum)) + '</div>' +
+      '<div class="sub">' + fw.rows.slice(-10).map(function (r) { return esc(r.d.slice(5)) + (r.side === "S" ? ' 倒T' + (r.hit ? '(止损)' : '') : ' 正T') + ' <span class="' + cl(r.bp) + '">' + sgn(r.bp / 100, 2) + '%</span>'; }).join(' · ') + '</div>';
+  } else h += '<div class="sub" style="margin-top:0">从 ' + R2_FROM + ' 起，每个交易日收盘后按规则自动记一笔（不管你实际做没做），按「设置」里的成本扣费。</div>';
+  h += '<div class="sub"><b>停用线：</b>累计 20 次后平均仍为负，就别再按这个做了——说明它在现在的光迅上不成立。</div></details>';
   return h;
 }
 function dkLedgerHTML() {
@@ -2175,7 +2312,7 @@ function dkBind() {
   var add = $("dk_add"); if (add) add.onclick = function () {
     var p1 = v("dk_p1"), sh = Math.round(v("dk_n")), dir = $("dk_dir").value;
     if (!(p1 > 0) || !(sh > 0)) { toast("填先手价和股数"); return; }
-    if (dir === "S") toast("记下了。提醒：倒T 三年在光迅上平均 −38bp/次");
+    if (dir === "S") toast("记下了。倒T 记得挂条件单：涨到开盘价×1.02 就买回");
     var F = deskCompute() || { rows: {} };
     DKS.log.push({ id: Date.now().toString(36), d: bjDate(), dir: dir, p1: p1, sh: sh, p2: 0,
       snap: { gap: F.rows.gap ? F.rows.gap.v : null, us: F.usV, comp: F.comp } });
@@ -2202,9 +2339,12 @@ function deskAlarm() {
   var m = bjMin(), today = bjDate(), F = deskCompute(); if (!F) return;
   if (m >= 565 && m <= 572 && DKS.N.am !== today && F.isToday && isFinite(F.rows.gap && F.rows.gap.v)) {
     DKS.N.am = today; dkSave();
-    var lim = F.gapPx >= F.prevC * 1.097, Lv = lvCompute(F);
-    notifSend("光迅竞价 " + dkPctS(F.rows.gap.v) + " · B " + (Lv && Lv.B ? Lv.Bname + " " + fx(Lv.B, 2) : "—") + " / S " + (Lv && Lv.S ? Lv.Sname + " " + fx(Lv.S, 2) : "—"),
-      lim ? "竞价涨停，今天不做。" : "B/S 是今天约一半概率摸到的位置，不是信号。要做T：只做正T，9:30 后买，14:50 后卖同样数量底仓。");
+    var lmA = r2Lim(F.prevC), lim = F.gapPx >= lmA.up - 0.001 || F.gapPx <= lmA.dn + 0.001, rgA = r2Regime(r2Bars(F)), dnA = !!(rgA && !rgA.up);
+    var big = !dnA && F.gapPx >= F.prevC * 1.05;
+    notifSend("光迅竞价 " + dkPctS(F.rows.gap.v) + " · " + (dnA ? "下跌段 · 倒T" : "上涨段 · 正T"),
+      lim ? "开盘涨停或跌停，今天不做。" : (big ? "高开 ≥5%，今天不做正T。"
+        : (dnA ? "9:30 后卖出 T 仓，挂条件单：涨到 " + fx(r2Stop(F.gapPx), 2) + " 买回；没触发就 14:50 后买回。"
+          : "9:30 后买 T 仓，14:50 后卖同样数量的老仓。")));
   }
   var open = DKS.log.filter(function (e) { return !(e.p2 > 0) && e.d === today; });
   if (m >= 888 && m <= 898 && DKS.N.pm !== today && open.length) {
@@ -3354,6 +3494,8 @@ function actionBars(D, long) {
 var EBS = {"pooled":{"up":{"f":["gapA","absGap","rng1","rng5"],"mu":[-0.0327,0.1927,0.9695,0.9625],"sd":[0.3353,0.2764,0.4342,0.2063],"b":[-0.9503,-0.0778,0.0618,0.0704,0.067]},"dn":{"b":[-1.0453,0.0592,0.0425,0.0287,0.0726]},"qu":[0.1092,0.1499,0.1809,0.2098,0.236,0.2637,0.2908,0.317,0.3427,0.368,0.3939,0.42,0.4456,0.472,0.4985,0.5238,0.5497,0.5754,0.6006,0.6277,0.6536,0.6796,0.7057,0.7317,0.7574,0.7839,0.811,0.8371,0.8624,0.8879,0.9146,0.9414,0.9686,0.9966,1.0237,1.0507,1.0788,1.1071,1.1345,1.1644,1.1951,1.2241,1.2546,1.2836,1.3144,1.3449,1.3777,1.4105,1.4439,1.4762,1.5095,1.5435,1.5788,1.6148,1.652,1.6902,1.7283,1.7667,1.8067,1.8482,1.8926,1.9377,1.9841,2.0335,2.0821,2.1343,2.1849,2.2407,2.2969,2.3575,2.4195,2.4846,2.5543,2.628,2.7069,2.7945,2.8841,2.9779,3.0756,3.1841,3.2986],"qd":[0.067,0.1186,0.1548,0.185,0.2127,0.2388,0.2633,0.2893,0.316,0.3418,0.368,0.3934,0.418,0.4445,0.4701,0.496,0.5221,0.548,0.5759,0.6034,0.6297,0.6558,0.6828,0.7099,0.7369,0.7652,0.7926,0.8195,0.8478,0.8757,0.904,0.9327,0.961,0.9906,1.0201,1.0488,1.0778,1.1076,1.1376,1.169,1.2014,1.2326,1.2642,1.2965,1.3291,1.3624,1.3961,1.4316,1.4668,1.5011,1.5376,1.5736,1.6133,1.6528,1.6924,1.7335,1.7748,1.8169,1.8599,1.9031,1.9493,1.9939,2.0406,2.0903,2.1422,2.1928,2.2454,2.3008,2.3586,2.4172,2.4808,2.5484,2.6203,2.6917,2.768,2.8447,2.9312,3.0211,3.117,3.2243,3.3371]},
   "kc":{"up":{"f":["gapA","absGap","rng1","rng5"],"mu":[-0.0303,0.2005,0.9789,0.9708],"sd":[0.3657,0.3074,0.4475,0.2155],"b":[-0.9023,-0.1147,0.089,0.0955,0.0586]},"dn":{"b":[-1.0274,0.1123,0.0067,0.0119,0.0886]},"qu":[0.189,0.2088,0.2331,0.2592,0.2837,0.3079,0.331,0.3607,0.3777,0.4016,0.4276,0.4491,0.4705,0.4936,0.5173,0.5412,0.5621,0.5862,0.6079,0.6313,0.6593,0.6776,0.6987,0.7219,0.7493,0.7666,0.7936,0.818,0.8441,0.8672,0.8919,0.9157,0.9399,0.963,0.9858,1.0144,1.0394,1.0649,1.0878,1.1139,1.1377,1.1635,1.19,1.2159,1.2402,1.2675,1.2957,1.3208,1.352,1.3766,1.4074,1.4416,1.4737,1.5056,1.5318,1.5639,1.5951,1.6318,1.6604,1.6975,1.7409,1.7881,1.8302,1.8898,1.9555,2.0044,2.052,2.1046,2.1533,2.2117,2.2741,2.3574,2.4365,2.5383,2.6349,2.7278,2.82,2.9015,2.9894,3.1028,3.2052],"qd":[0.132,0.1641,0.1857,0.2074,0.2308,0.2575,0.2802,0.3068,0.333,0.3589,0.3824,0.407,0.438,0.4599,0.4808,0.5054,0.5294,0.5574,0.585,0.6123,0.6386,0.6679,0.693,0.7205,0.7455,0.7691,0.7971,0.8252,0.8493,0.8752,0.9007,0.9299,0.9564,0.9845,1.013,1.037,1.0611,1.0895,1.1208,1.1486,1.1787,1.2098,1.2417,1.265,1.2994,1.3316,1.3645,1.397,1.427,1.4684,1.5003,1.5313,1.5713,1.6086,1.6461,1.6823,1.7221,1.7572,1.7922,1.8272,1.8707,1.9151,1.9531,1.9964,2.052,2.1051,2.1654,2.2167,2.2695,2.3248,2.3747,2.4432,2.5048,2.567,2.6426,2.7161,2.7932,2.8784,2.9843,3.0612,3.1447]}};
 function ebsModel(name) { return /科创50|科创板50/.test(name || "") ? EBS.kc : EBS.pooled; }
+/* ETF 涨跌幅限制：跟踪科创板 / 创业板的 20%，其余 10% */
+function etfLim(D) { return /科创|创业|双创/.test((D && D.name) || "") || /^(588|589|159915|159952)/.test((D && D.code) || "") ? 0.2 : 0.1; }
 function ebsPred(M, side, f) {
   var u = M.up, b = M[side].b, s = b[0];
   u.f.forEach(function (k, i) { s += b[i + 1] * (f[k] - u.mu[i]) / u.sd[i]; });
@@ -3372,13 +3514,17 @@ function ebsLevels(D) {
   var o = live ? last.o : p1.c, og = (o / p1.c - 1) * 100;
   var f = { gapA: og / atr, absGap: Math.abs(og) / atr, rng1: (p1.h - p1.l) / p2.c * 100 / atr, rng5: r5 / atr };
   var M = ebsModel(D.name), mu = ebsPred(M, "up", f), md = ebsPred(M, "dn", f), oT = Math.round(o * 1000);
+  /* 涨跌停（2026-11-24，src/v13）：点位不超出涨跌停价 */
+  var lmE = etfLim(D), upT = Math.round(p1.c * (1 + lmE) * 1000 + 1e-6), dnT = Math.round(p1.c * (1 - lmE) * 1000 + 1e-6);
   function lv(p) {
     var iq = Math.round(100 - 100 * p) - 10;
     var ST = Math.ceil(oT * (1 + M.qu[iq] * mu * atr / 100) - 1e-6), BT = Math.floor(oT * (1 - M.qd[iq] * md * atr / 100) + 1e-6);
     if (ST < oT + 1) ST = oT + 1; if (BT > oT - 1) BT = oT - 1;
-    return { S: ST / 1000, B: BT / 1000, ST: ST, BT: BT };
+    var capS = ST > upT, capB = BT < dnT; if (capS) ST = upT; if (capB) BT = dnT;
+    return { S: ST / 1000, B: BT / 1000, ST: ST, BT: BT, capS: capS, capB: capB };
   }
-  var L = { live: live, d: live ? last.d : "", o: o, pc: p1.c, gap: og, atr: atr, l70: lv(0.7), l50: lv(0.5), kc: M === EBS.kc };
+  var L = { live: live, d: live ? last.d : "", o: o, pc: p1.c, gap: og, atr: atr, l70: lv(0.7), l50: lv(0.5), kc: M === EBS.kc,
+    limUp: upT / 1000, limDn: dnT / 1000 };
   if (live) { L.now = last.c; L.hT = Math.round(last.h * 1000); L.lT = Math.round(last.l * 1000); }
   return L;
 }
@@ -3406,6 +3552,14 @@ function etfRecord(D) {
   r.y = agg(t.filter(function (x) { return x.d >= from; })); r.from = t.length ? t[0].d : "";
   return r;
 }
+/* 今天这根K：高开/低开多少、开盘到收盘走了多少（复盘用；11-24 通信ETF 高开 6.2%、开→收 −5.2%） */
+function todayLine(D) {
+  var a = D && D.daily, n = a ? a.length : 0; if (n < 2) return "";
+  var tb = a[n - 1], pb = a[n - 2]; if (tb.d !== bjDate() || !(tb.o > 0) || !(pb.c > 0)) return "";
+  var g = (tb.o / pb.c - 1) * 100, oc = (tb.c / tb.o - 1) * 100;
+  return '<div class="ebrec">今天' + (preClose() ? '（盘中）' : '') + '：' + (g >= 0 ? '高开 ' : '低开 ') + sgn(g, 1) + '% · 开→收 <b class="' + cl(oc) + '">' + sgn(oc, 1) + '%</b>' +
+    ' · 全天 ' + sgn((tb.c / pb.c - 1) * 100, 1) + '%' + (g >= 5 ? ' <span class="m">（高开 ≥5% 的日子开盘买历史上多半亏）</span>' : '') + '</div>';
+}
 function recLine(D) {
   var r = etfRecord(D); if (!r) return "";
   if (!r.n) return '<div class="ebrec">历史上还没触发过这条规则</div>';
@@ -3422,6 +3576,9 @@ function etfStatus(D) {
   if (st.hold && st.hold.dir && tb && tb.o > 0) {
     var cur = st.phase === "open" && D.q && D.q.now ? D.q.now : tb.c;
     var pnl = (cur / tb.o - 1) * 1e4 - SW.costOf(tb.o, D.kind, S.F).total;
+    var dnPx = st.i > 0 ? Math.round(D.daily[st.i - 1].c * (1 - etfLim(D)) * 1000 + 1e-6) / 1000 : 0;
+    if (st.phase === "open" && cur <= dnPx + 0.0005) return { pill: '<span class="pill bad">跌停卖不出</span>',
+      txt: '封跌停：老仓卖不出去，今天的 T 平不掉，明天开盘再卖 · 目前 <b class="' + cl(pnl) + '">' + sgn(pnl, 0) + 'bp</b>' };
     if (st.phase === "open") return { pill: '<span class="pill bad">收盘前卖</span>',
       txt: '今天开盘买的那份，收盘前卖出同样数量的老仓 · 目前 <b class="' + cl(pnl) + '">' + sgn(pnl, 0) + 'bp</b>' };
     done = ' · 今天这笔 <b class="' + cl(pnl) + '">' + sgn(pnl, 0) + 'bp</b>';
@@ -3441,9 +3598,10 @@ function ebsBox(L) {
   function hit(side, lv) { if (!L.live) return ""; var x = side === "B" ? L.lT <= lv.BT : L.hT >= lv.ST; return x ? '<em>已触及</em>' : '<em class="m">未触及</em>'; }
   function mk(side, lv) { return L.live && (side === "B" ? L.lT <= lv.BT : L.hT >= lv.ST) ? ' <span class="wr">✓</span>' : ""; }
   return '<div class="lvbox">' +
-    '<div class="lvs"><span>B · 摸到约 70%</span><b class="dn">' + fx(L.l70.B, 3) + '</b><i>开盘 −' + fx((1 - L.l70.B / L.o) * 100, 1) + '%</i>' + hit("B", L.l70) + '</div>' +
+    '<div class="lvs"><span>B · ' + (L.l70.capB ? '跌停价' : '摸到约 70%') + '</span><b class="dn">' + fx(L.l70.B, 3) + '</b><i>开盘 −' + fx((1 - L.l70.B / L.o) * 100, 1) + '%</i>' + hit("B", L.l70) + '</div>' +
     '<div class="lva"><span>' + (L.live ? '开盘' : '预估开盘') + '</span><b>' + fx(L.o, 3) + '</b><i>' + (L.live ? '跳空 ' + sgn(L.gap, 1) + '%' : '按昨收') + '</i></div>' +
-    '<div class="lvs"><span>S · 摸到约 70%</span><b class="up">' + fx(L.l70.S, 3) + '</b><i>开盘 +' + fx((L.l70.S / L.o - 1) * 100, 1) + '%</i>' + hit("S", L.l70) + '</div></div>' +
+    '<div class="lvs"><span>S · ' + (L.l70.capS ? '涨停价' : '摸到约 70%') + '</span><b class="up">' + fx(L.l70.S, 3) + '</b><i>开盘 +' + fx((L.l70.S / L.o - 1) * 100, 1) + '%</i>' + hit("S", L.l70) + '</div></div>' +
+    '<div class="sub" style="margin-top:6px">涨停 ' + fx(L.limUp, 3) + ' · 跌停 ' + fx(L.limDn, 3) + (L.l70.capS || L.l50.capS ? ' <span class="wr">· S 超出涨停价，按涨停价显示，摸不到更高</span>' : '') + '</div>' +
     '<div class="sub" style="margin-top:6px">摸到约 50%：B <b class="dn">' + fx(L.l50.B, 3) + '</b>' + mk("B", L.l50) +
     ' · S <b class="up">' + fx(L.l50.S, 3) + '</b>' + mk("S", L.l50) +
     ' <span class="m">· ATR ' + fx(L.atr, 1) + '%' + (L.live ? '' : ' · 开盘前按昨收预估') + '</span></div>';
@@ -3464,7 +3622,7 @@ function myEtfCard() {
       '</span></span><span class="r"><b class="' + cl(q.pct) + '">' + fx(px, 3) + '</b> ' +
       '<span class="' + cl(q.pct) + '">' + sgn(q.pct || 0, 2) + '%</span> <span class="m">›</span></span></div>' +
       '<div class="ebst">' + s.pill + '<span>' + s.txt + '</span></div>' +
-      recLine(D) +
+      todayLine(D) + recLine(D) +
       (L ? '<details class="fold"><summary>今天的 B/S 参考位<span class="m" style="font-size:12px">不是信号</span></summary>' + ebsBox(L) + '</details>' : '') + '</div>';
   });
   h += '<details class="fold"><summary>怎么做 · 为什么只在信号日做</summary><div class="sub" style="margin-top:0">' + EBS_NOTE + '</div></details>';
@@ -3780,10 +3938,15 @@ function renderRes() {
     '<div class="sub" style="margin-top:0">是"今天盘中大概率会碰到的价"，按波动大小算出来，<b>说 70% 就大约 7 成的日子碰到</b>（检验过，基本准）。<br>' +
     '<b>不是买卖信号</b>：按它们每天高抛低吸，ETF（284 只、3 年）两边都挂 −25bp/次，只挂 B −13bp，只挂 S −34bp；个股也一样亏。' +
     '原因是盘中涨起来的往往收得更高、跌下去的往往收得更低。</div></div>';
+  h += '<div class="card"><h3>光迅：看行情做T<span class="r">实验 · 11-25 起前向记分</span></h3><div class="sub" style="margin-top:0">' +
+    '前一日收盘在 60 日线上方 → <b>正T</b>（开盘买、收盘卖老仓，高开 ≥5% 不做）；在下方 → <b>倒T</b>（开盘卖老仓，涨到开盘价×1.02 就买回，否则收盘买回）。' +
+    '开盘涨停/跌停不做；每次不超过底仓 1/3。<br>检验：光模块组上为正（光迅 2026 每天 +0.80%，t=2.8，胜率 51%），随机个股上为负（−0.10%，t=−3.0），' +
+    '没过事先定的标准，像是光模块板块特有。所以按实验做：光迅页的「前向记分」每天自动记一笔，20 次后平均为负就停。</div></div>';
   h += '<div class="card"><h3>试过、不管用的<span class="r">都按事先写好的标准检验</span></h3><div class="weui-cells" style="margin-top:0">' +
     row('每天按 B/S 高抛低吸（ETF、个股）', '<span class="pill bad">亏</span>') +
     row('光迅 90~95% 高胜率档位、再加止损', '<span class="pill bad">亏</span>') +
     row('光迅顺势（涨破 S 买、跌破 B 卖）', '<span class="pill warn">为正但没过线</span>') +
+    row('高开 ≥5% 还开盘买（正T）', '<span class="pill bad">三组都为负</span>') +
     row('倒T（先卖后买）', '<span class="pill bad">三种做法都亏</span>') +
     row('个股短线信号（含光迅，566 个候选）', '<span class="pill dim">0 个通过</span>') +
     row('竞价、外盘、期指、资金、技术指标判断方向', '<span class="pill dim">244 个 0 通过</span>') +
@@ -3793,7 +3956,9 @@ function renderRes() {
     '</div><div class="sub">最硬的一条事实：A 股隔夜段扣成本后是负的，大跌日收盘去抄底，四次里有三次第二天开得更低——所以规则都是"次日开盘"进。</div></div>';
   h += '<details class="cfold"><summary><span class="t">光迅：这些因子检验过了吗</span><span class="r">3 年</span></summary>' + dkEvidence() + '</details>';
   h += '<details class="cfold"><summary><span class="t">完整研究记录</span><span class="r">v1 ~ v10</span></summary>' +
-    '<div class="sub" style="margin-top:0">11-24 v11/v12：光迅 90/95% 档胜率 78~89%，但每天 −0.4~−0.5%；加止损亏损减半、胜率也掉，还是负（5 分钟回放核对过）。' +
+    '<div class="sub" style="margin-top:0">11-24 v13（光迅高开 7.75% 后开→收 −9.2%）：高开 ≥5% 时开盘买正T，光模块组 2023~25 −0.6%、2026 −0.6%、随机个股 −1.4%（t=−2.4），' +
+    '离涨停不到 3% 的高开 −1.9%（t=−2.75），三组都为负但发现期不显著，按风控提示处理；收盘封跌停卖不出底仓的日子约 0.3~0.6%，对均值影响不到 1bp。' +
+    '网页的 B/S 从此不会超出涨跌停价。<br>11-24 v11/v12：光迅 90/95% 档胜率 78~89%，但每天 −0.4~−0.5%；加止损亏损减半、胜率也掉，还是负（5 分钟回放核对过）。' +
     '顺势（涨破 S 买、跌破 B 卖）光模块组 2026 +0.29%/天（t=3.6），但胜率只有 21%，2023~25 年 t=2.9 没到事先定的 3，16 个候选 0 通过。<br>' +
     '11-23 v10：ETF 每天按 B/S 做T，7 个候选 0 通过（双边 −25bp t=−8.4）；追涨扣掉追价约 0。' +
     '11-23 v9：放宽 ETF 触发 5 个变体 0 通过；光迅 B/S 只有 4 个因子有用。下面是更早的记录。</div>' + resHistory() + '</details>';
